@@ -19,6 +19,7 @@ import (
 	"github.com/vks4/vks4/services/media-worker/internal/layout"
 	"github.com/vks4/vks4/services/media-worker/internal/peer"
 	"github.com/vks4/vks4/services/media-worker/internal/pipeline"
+	"github.com/vks4/vks4/services/media-worker/internal/sipbridge"
 )
 
 type LayoutMode = layout.Mode
@@ -67,6 +68,9 @@ type Room struct {
 
 	// displayNames — мапа peerID → имя для подписи в MCU output (textoverlay).
 	displayNames map[string]string
+	// sipPeers — SIP-peer'ы добавленные через AddSIPPeer (plain-RTP, не WebRTC).
+	// Получают MCU audio output (Opus RTP) через broadcastAudio.
+	sipPeers map[string]*sipbridge.Peer
 	// showNames — глобальный toggle: если false, имена не рисуются (overlay = " ").
 	showNames bool
 	// Стиль подписи peer-ов в MCU output (применяется ко всем).
@@ -275,6 +279,63 @@ func buildOverlayMarkup(name, bgHex string, bgAlpha float64, fgHex string) strin
 		`<span background="%s" bgalpha="%d%%" foreground="%s"> %s </span>`,
 		bgHex, int(bgAlpha*100), fgHex, esc(name),
 	)
+}
+
+// AddSIPPeer регистрирует SIP-peer (plain-RTP, audio only) — добавляет в pipeline
+// и открывает UDP listener для входящих Opus пакетов от sip-gateway.
+// Возвращает peer (с .AudioPort для SDP answer).
+func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
+	// pipeline создаёт audioIn channel (Opus RTP appsrc). videoIn для SIP audio-only не нужен,
+	// но AddPeer возвращает оба — videoIn будет idle.
+	_, audioIn, err := r.pipeline.AddPeer(peerID)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := sipbridge.NewPeer(peerID, audioIn, r.log)
+	if err != nil {
+		_ = r.pipeline.RemovePeer(peerID)
+		return nil, err
+	}
+	r.mu.Lock()
+	if r.sipPeers == nil {
+		r.sipPeers = map[string]*sipbridge.Peer{}
+	}
+	if r.displayNames == nil {
+		r.displayNames = map[string]string{}
+	}
+	r.sipPeers[peerID] = sp
+	r.displayNames[peerID] = displayName
+	r.joinOrder = append(r.joinOrder, peerID)
+	for i := range r.slots {
+		if r.slots[i] == "" {
+			r.slots[i] = peerID
+			break
+		}
+	}
+	r.mu.Unlock()
+	r.log.Info("sip peer added", zap.String("peer", peerID), zap.Int("audio-port", sp.AudioPort))
+	r.applyLayout()
+	return sp, nil
+}
+
+// RemoveSIPPeer останавливает SIP-peer и убирает из room.
+func (r *Room) RemoveSIPPeer(peerID string) {
+	r.mu.Lock()
+	sp := r.sipPeers[peerID]
+	delete(r.sipPeers, peerID)
+	delete(r.displayNames, peerID)
+	for i, id := range r.slots {
+		if id == peerID {
+			r.slots[i] = ""
+		}
+	}
+	r.joinOrder = removeID(r.joinOrder, peerID)
+	r.mu.Unlock()
+	if sp != nil {
+		sp.Close()
+	}
+	_ = r.pipeline.RemovePeer(peerID)
+	r.applyLayout()
 }
 
 // SetShowNames переключает отображение имён в MCU output.
@@ -564,12 +625,19 @@ func (r *Room) egressLoop() {
 			if !ok {
 				return
 			}
-			// Audio из pipeline.AudioOut() игнорируем в broadcast — это микс ВСЕХ peer'ов,
-			// включая отправителя, что вызывает self-echo. Mix-minus делается через
-			// SFU-forward в OnAudioRTP. Pipeline всё равно дренируем чтобы appsink не
-			// заблокировался. Recording mix идёт по отдельной ветке pipeline (mp4mux),
-			// она работает независимо от этого канала.
-			_ = s
+			// Для WebRTC peers MCU audio output игнорируется (mix-minus делается через
+			// SFU-forward в OnAudioRTP). Для SIP-peers'ов pipeline AudioOut — единственный
+			// источник аудио к SIP-терминалу. Они получают общий микс (включая собственный
+			// голос — Polycom имеет AEC, поэтому echo минимален).
+			r.mu.RLock()
+			sipPeers := make([]*sipbridge.Peer, 0, len(r.sipPeers))
+			for _, sp := range r.sipPeers {
+				sipPeers = append(sipPeers, sp)
+			}
+			r.mu.RUnlock()
+			for _, sp := range sipPeers {
+				_ = sp.Send(s.Data)
+			}
 		}
 	}
 }

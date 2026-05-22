@@ -1,0 +1,7 @@
+<include>
+  <!-- Базовые переменные для FreeSWITCH SIP-edge.
+       Адрес sip-gateway внутри docker-сети, куда FS bridge-ит входящие звонки как B2BUA. -->
+  <X-PRE-PROCESS cmd="set" data="sipgw_addr=sip-gateway"/>
+  <X-PRE-PROCESS cmd="set" data="sipgw_port=5070"/>
+  <X-PRE-PROCESS cmd="set" data="esl_password=ClueCon"/>
+</include>

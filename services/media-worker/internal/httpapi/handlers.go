@@ -28,6 +28,8 @@ func (a *API) Router() http.Handler {
 	r.Get("/rooms", a.listRooms)
 	r.Post("/rooms/{room}/peers", a.addPeer)
 	r.Delete("/rooms/{room}/peers/{peer}", a.removePeer)
+	r.Post("/rooms/{room}/sip-peers", a.addSIPPeer)
+	r.Delete("/rooms/{room}/sip-peers/{peer}", a.removeSIPPeer)
 	r.Get("/rooms/{room}/roster", a.roster)
 	r.Put("/rooms/{room}/layout", a.updateLayout)
 	r.Put("/rooms/{room}/slots", a.assignSlots)
@@ -89,6 +91,47 @@ func (a *API) addPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, addPeerResp{SDPAnswer: answer})
+}
+
+type addSIPPeerReq struct {
+	PeerID      string `json:"peerId"`
+	DisplayName string `json:"displayName"`
+}
+
+type addSIPPeerResp struct {
+	AudioPort int `json:"audioPort"`
+}
+
+// addSIPPeer создаёт SIP-peer (plain-RTP) в комнате — для интеграции FreeSWITCH B2BUA.
+// Возвращает UDP port куда sip-gateway должен слать Opus RTP.
+func (a *API) addSIPPeer(w http.ResponseWriter, r *http.Request) {
+	roomID := chi.URLParam(r, "room")
+	var in addSIPPeerReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	rm, err := a.Rooms.GetOrCreate(r.Context(), roomID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sp, err := rm.AddSIPPeer(in.PeerID, in.DisplayName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, addSIPPeerResp{AudioPort: sp.AudioPort})
+}
+
+func (a *API) removeSIPPeer(w http.ResponseWriter, r *http.Request) {
+	rm := a.Rooms.Get(chi.URLParam(r, "room"))
+	if rm == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	rm.RemoveSIPPeer(chi.URLParam(r, "peer"))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) removePeer(w http.ResponseWriter, r *http.Request) {

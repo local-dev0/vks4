@@ -1,0 +1,13 @@
+<include>
+  <context name="default">
+    <!-- default context — для зарегистрированных SIP-пользователей. Для anonymous calls
+         используется context=public. В первой итерации default пустой; добавлять
+         exten'ы можно для офисных номеров. -->
+    <extension name="unhandled">
+      <condition field="destination_number" expression="^(.*)$">
+        <action application="log" data="WARN Unhandled call in default context: ${destination_number}"/>
+        <action application="hangup" data="UNALLOCATED_NUMBER"/>
+      </condition>
+    </extension>
+  </context>
+</include>

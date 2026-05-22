@@ -1,0 +1,9 @@
+<configuration name="switch.conf" description="Core Configuration">
+  <settings>
+    <param name="colorize-console" value="false"/>
+    <param name="loglevel" value="debug"/>
+    <param name="rtp-start-port" value="16384"/>
+    <param name="rtp-end-port" value="16484"/>
+    <param name="rtp-enable-zrtp" value="false"/>
+  </settings>
+</configuration>

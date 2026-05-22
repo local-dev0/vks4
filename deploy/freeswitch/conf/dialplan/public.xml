@@ -1,0 +1,26 @@
+<include>
+  <context name="public">
+    <!-- Принимаем входящий SIP-звонок. Любой destination_number отправляется bridge'ом
+         к sip-gateway B2BUA. Реальный room_id передаётся через SIP To-URI user-part
+         (например sip:room-XXX@host) — sip-gateway его парсит. -->
+    <extension name="vks_inbound">
+      <condition field="destination_number" expression="^(.*)$">
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="set" data="ringback=silence_stream://-1"/>
+        <action application="set" data="continue_on_fail=false"/>
+        <!-- Inbound leg негоциирует свободно с Polycom (PCMU/G.722/etc). Codec="opus"
+             ставится только на OUTBOUND leg через {var=value} prefix в bridge data — FS делает
+             transcoding inbound→opus. -->
+        <action application="set" data="bypass_media=false"/>
+        <action application="log" data="INFO Incoming SIP call: from=${caller_id_number} to=${destination_number}"/>
+        <!-- answer() устанавливает media на inbound leg (Polycom PCMU). bridge затем создаёт
+             leg B к sip-gateway (Opus). FS делает transcoding PCMU↔Opus между legs.
+             absolute_codec_string=opus только на leg B (через bridge prefix) — FS forces Opus
+             в outbound INVITE, не trying transcode гимны Polycom'а. -->
+        <action application="answer"/>
+        <action application="bridge"
+          data="{absolute_codec_string=opus,sip_h_X-VKS-Room=${destination_number},sip_h_X-VKS-Caller=${caller_id_number}}sofia/gateway/vks-sipgw/${destination_number}"/>
+      </condition>
+    </extension>
+  </context>
+</include>

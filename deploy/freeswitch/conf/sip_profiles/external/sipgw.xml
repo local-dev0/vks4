@@ -1,0 +1,14 @@
+<include>
+  <!-- Outbound gateway к sip-gateway сервису. proxy = docker DNS hostname.
+       FS использует ip-resolution через системный resolver — в docker DNS работает,
+       sofia bridge URI без gateway-обёртки иногда нет. С gateway всегда reliable. -->
+  <gateway name="vks-sipgw">
+    <param name="username" value="vks"/>
+    <param name="password" value="-"/>
+    <param name="from-user" value="vks"/>
+    <param name="from-domain" value="sip-gateway"/>
+    <param name="proxy" value="sip-gateway:5070"/>
+    <param name="register" value="false"/>
+    <param name="caller-id-in-from" value="true"/>
+  </gateway>
+</include>

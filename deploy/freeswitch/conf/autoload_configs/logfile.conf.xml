@@ -1,0 +1,16 @@
+<configuration name="logfile.conf" description="File Logging">
+  <settings>
+    <param name="rotate-on-hup" value="true"/>
+  </settings>
+  <profiles>
+    <profile name="default">
+      <settings>
+        <!-- log goes to stdout via /proc/self/fd/1 — docker logs pickup -->
+        <param name="logfile" value="/proc/self/fd/1"/>
+      </settings>
+      <mappings>
+        <map name="all" value="debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+    </profile>
+  </profiles>
+</configuration>

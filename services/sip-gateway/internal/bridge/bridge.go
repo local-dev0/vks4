@@ -5,19 +5,18 @@
 package bridge
 
 import (
-	"context"
-	"errors"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
 
 type Call struct {
-	UUID    string
-	From    string
-	To      string
-	RoomID  string
-	PeerID  string
+	UUID      string    `json:"uuid"`
+	Caller    string    `json:"caller"`
+	RoomID    string    `json:"roomId"`
+	PeerID    string    `json:"peerId,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 type Bridge struct {
@@ -30,32 +29,35 @@ func New(log *zap.Logger) *Bridge {
 	return &Bridge{log: log, calls: map[string]*Call{}}
 }
 
-func (b *Bridge) Accept(ctx context.Context, c *Call) error {
-	if c.UUID == "" || c.RoomID == "" {
-		return errors.New("uuid and roomId required")
+// Accept регистрирует входящий SIP-звонок. UUID = FreeSWITCH channel id.
+// Реальный media-bridge (создание peer в media-worker, RTP forward) — следующая итерация.
+func (b *Bridge) Accept(uuid, room, caller string) {
+	if uuid == "" || room == "" {
+		return
 	}
+	c := &Call{UUID: uuid, Caller: caller, RoomID: room, StartedAt: time.Now()}
 	b.mu.Lock()
-	b.calls[c.UUID] = c
+	b.calls[uuid] = c
 	b.mu.Unlock()
-	b.log.Info("sip accept", zap.String("uuid", c.UUID), zap.String("from", c.From), zap.String("room", c.RoomID))
-	// TODO v0.2:
+	b.log.Info("sip accept", zap.String("uuid", uuid), zap.String("caller", caller), zap.String("room", room))
+	// TODO:
 	// 1. через media-worker HTTP API создать peer (POST /rooms/{room}/peers)
-	//    с SDP offer (генерация offer на стороне sip-gateway либо проксирование от FS)
-	// 2. собрать SDP answer и отдать обратно в FS через mod_dptools/bridge
-	return nil
+	//    с заглушечным SDP. peer.go должен уметь plain-RTP mode (без DTLS-SRTP).
+	// 2. RTP forward: FreeSWITCH → sip-gateway → media-worker appsrc.
+	// 3. Reverse RTP: media-worker output → sip-gateway → FS → SIP terminal.
 }
 
-func (b *Bridge) Release(ctx context.Context, uuid string) error {
+// Release вызывается при CHANNEL_DESTROY — освобождаем slot и (в будущем) peer в media-worker.
+func (b *Bridge) Release(uuid string) {
 	b.mu.Lock()
 	c := b.calls[uuid]
 	delete(b.calls, uuid)
 	b.mu.Unlock()
 	if c == nil {
-		return nil
+		return
 	}
-	b.log.Info("sip release", zap.String("uuid", uuid))
-	// TODO v0.2: DELETE /rooms/{room}/peers/{peer}
-	return nil
+	b.log.Info("sip release", zap.String("uuid", uuid), zap.String("room", c.RoomID))
+	// TODO: DELETE /rooms/{room}/peers/{peer}
 }
 
 func (b *Bridge) Active() []Call {
