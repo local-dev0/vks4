@@ -63,6 +63,7 @@ type layoutReq struct {
 	Cells         []layoutCell `json:"cells,omitempty"`
 	ShowNames     *bool        `json:"showNames,omitempty"`
 	NameBgAlpha   *float64     `json:"nameBgAlpha,omitempty"`
+	NameBgColor   *string      `json:"nameBgColor,omitempty"`
 	NameFontSize  *int         `json:"nameFontSize,omitempty"`
 	NameFontColor *string      `json:"nameFontColor,omitempty"`
 }
@@ -81,6 +82,7 @@ func (c *HTTPClient) UpdateLayout(ctx context.Context, id uuid.UUID, layout doma
 		Cells:         cells,
 		ShowNames:     layout.ShowNames,
 		NameBgAlpha:   layout.NameBgAlpha,
+		NameBgColor:   layout.NameBgColor,
 		NameFontSize:  layout.NameFontSize,
 		NameFontColor: layout.NameFontColor,
 	})

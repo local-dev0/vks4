@@ -45,11 +45,15 @@ func (s *LayoutTemplates) Get(ctx context.Context, id uuid.UUID) (*domain.Layout
 }
 
 type CreateLayoutTemplateInput struct {
-	Name       string
-	Width      int
-	Height     int
-	Cells      []domain.LayoutCell
-	Background domain.LayoutBackground
+	Name          string
+	Width         int
+	Height        int
+	Cells         []domain.LayoutCell
+	Background    domain.LayoutBackground
+	NameBgAlpha   *float64
+	NameBgColor   *string
+	NameFontSize  *int
+	NameFontColor *string
 }
 
 func (s *LayoutTemplates) Create(ctx context.Context, actor uuid.UUID, in CreateLayoutTemplateInput) (*domain.LayoutTemplate, error) {
@@ -66,7 +70,10 @@ func (s *LayoutTemplates) Create(ctx context.Context, actor uuid.UUID, in Create
 	bgB, _ := json.Marshal(in.Background)
 	row, err := s.repo.Create(ctx, postgres.CreateLayoutTemplateInput{
 		Name: in.Name, Width: in.Width, Height: in.Height,
-		Cells: cellsB, Background: bgB, CreatedBy: &actor,
+		Cells: cellsB, Background: bgB,
+		NameBgAlpha: in.NameBgAlpha, NameBgColor: in.NameBgColor,
+		NameFontSize: in.NameFontSize, NameFontColor: in.NameFontColor,
+		CreatedBy: &actor,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeInternal, "db", err)
@@ -86,6 +93,19 @@ func (s *LayoutTemplates) Update(ctx context.Context, actor, id uuid.UUID, set m
 	if v, ok := set["background"]; ok {
 		b, _ := json.Marshal(v)
 		set["background"] = b
+	}
+	// renaming camelCase → snake_case для column names
+	rename := map[string]string{
+		"nameBgAlpha":   "name_bg_alpha",
+		"nameBgColor":   "name_bg_color",
+		"nameFontSize":  "name_font_size",
+		"nameFontColor": "name_font_color",
+	}
+	for k, dbk := range rename {
+		if v, ok := set[k]; ok {
+			set[dbk] = v
+			delete(set, k)
+		}
 	}
 	if err := s.repo.Update(ctx, id, set); err != nil {
 		return nil, apperr.Wrap(apperr.CodeInternal, "db", err)

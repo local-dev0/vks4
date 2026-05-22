@@ -541,27 +541,42 @@ func (p *gstPipeline) disposePeer(b *peerBranch) {
 	if b.audioSrc != nil {
 		b.audioSrc.EndStream()
 	}
+
+	// 1) Останавливаем ВСЕ peer-элементы одновременно (StateNull). Это размораживает
+	// downstream queue/aggregator pads и предотвращает "streaming stopped reason not-linked".
+	if b.videoBin != nil {
+		_ = b.videoBin.SetState(gst.StateNull)
+	}
+	if b.audioBin != nil {
+		_ = b.audioBin.SetState(gst.StateNull)
+	}
+	if b.teeBin != nil {
+		_ = b.teeBin.SetState(gst.StateNull)
+	}
+	if b.nameTov != nil {
+		_ = b.nameTov.SetState(gst.StateNull)
+	}
+
+	// 2) Освобождаем request-pads у compositor и audiomixer (peer-pad position в них больше не нужен).
 	if b.vMixPad != nil && p.vmix != nil {
 		p.vmix.ReleaseRequestPad(b.vMixPad)
 	}
 	if b.aMixPad != nil && p.amix != nil {
 		p.amix.ReleaseRequestPad(b.aMixPad)
 	}
+
+	// 3) Удаляем элементы из pipeline.
+	if b.nameTov != nil {
+		_ = p.pipeline.Remove(b.nameTov)
+	}
+	if b.teeBin != nil {
+		_ = p.pipeline.Remove(b.teeBin.Element)
+	}
 	if b.videoBin != nil {
-		_ = b.videoBin.SetState(gst.StateNull)
 		_ = p.pipeline.Remove(b.videoBin.Element)
 	}
 	if b.audioBin != nil {
-		_ = b.audioBin.SetState(gst.StateNull)
 		_ = p.pipeline.Remove(b.audioBin.Element)
-	}
-	if b.teeBin != nil {
-		_ = b.teeBin.SetState(gst.StateNull)
-		_ = p.pipeline.Remove(b.teeBin.Element)
-	}
-	if b.nameTov != nil {
-		_ = b.nameTov.SetState(gst.StateNull)
-		_ = p.pipeline.Remove(b.nameTov)
 	}
 }
 
@@ -725,61 +740,42 @@ func (p *gstPipeline) pullSample(sink *app.Sink, out chan Sample) gst.FlowReturn
 	return gst.FlowOK
 }
 
-// SetPeerName устанавливает текст подписи peer'а через textoverlay element.
-// При пустом имени отключаем shaded-background — иначе остаётся серая полоса даже без текста.
-func (p *gstPipeline) SetPeerName(peerID, name string) error {
+// SetPeerOverlay полностью устанавливает overlay peer'а — markup и базовые свойства.
+// markup="" → пустой overlay (text="", shaded-background=false).
+// markup non-empty → text=markup, use-markup=true (Pango markup для bg/fg/alpha).
+func (p *gstPipeline) SetPeerOverlay(peerID, markup string, fontSize int) error {
 	p.mu.Lock()
 	b, ok := p.peers[peerID]
 	p.mu.Unlock()
 	if !ok || b == nil || b.nameTov == nil {
 		return fmt.Errorf("peer %s textoverlay not found", peerID[:8])
 	}
-	if name == "" || name == " " {
+	if markup == "" {
 		_ = b.nameTov.SetProperty("text", "")
-		return b.nameTov.SetProperty("shaded-background", false)
-	}
-	_ = b.nameTov.SetProperty("shaded-background", true)
-	return b.nameTov.SetProperty("text", name)
-}
-
-// SetPeerStyle обновляет стиль подписи (цвет фона, шрифт, цвет текста).
-//   - bgAlpha 0..1 → shading-value 0..255 (затемнение полупрозрачной подложкой).
-//   - fontSize в pt (по умолчанию 14).
-//   - fontColor hex "#RRGGBB" → внутренний ARGB uint.
-func (p *gstPipeline) SetPeerStyle(peerID string, bgAlpha float64, fontSize int, fontColor string) error {
-	p.mu.Lock()
-	b, ok := p.peers[peerID]
-	p.mu.Unlock()
-	if !ok || b == nil || b.nameTov == nil {
+		_ = b.nameTov.SetProperty("shaded-background", false)
 		return nil
-	}
-	if bgAlpha < 0 {
-		bgAlpha = 0
-	}
-	if bgAlpha > 1 {
-		bgAlpha = 1
 	}
 	if fontSize < 8 {
 		fontSize = 14
 	}
-	_ = b.nameTov.SetProperty("shading-value", uint(bgAlpha*255))
+	_ = b.nameTov.SetProperty("shaded-background", false) // фон рисуем через markup
+	_ = b.nameTov.SetProperty("use-markup", true)
 	_ = b.nameTov.SetProperty("font-desc", fmt.Sprintf("Sans Bold %d", fontSize))
-	if c, ok := parseHexARGB(fontColor); ok {
-		_ = b.nameTov.SetProperty("color", c)
-	}
-	return nil
+	return b.nameTov.SetProperty("text", markup)
 }
 
-// parseHexARGB парсит "#RRGGBB" в uint ARGB (alpha=0xFF). Возвращает false при ошибке.
-func parseHexARGB(s string) (uint, bool) {
-	if len(s) != 7 || s[0] != '#' {
-		return 0, false
-	}
-	var v uint64
-	if _, err := fmt.Sscanf(s[1:], "%06x", &v); err != nil {
-		return 0, false
-	}
-	return uint(0xFF000000) | uint(v), true
+// SetPeerName / SetPeerStyle оставлены для совместимости с интерфейсом, делегируют room'у
+// (room сам формирует markup и зовёт SetPeerOverlay).
+func (p *gstPipeline) SetPeerName(peerID, name string) error {
+	// Сюда room передаёт уже готовый markup. Если пусто — отключаем overlay.
+	return p.SetPeerOverlay(peerID, name, 14)
+}
+
+func (p *gstPipeline) SetPeerStyle(peerID string, bgAlpha float64, fontSize int, fontColor string) error {
+	_, _, _, _ = peerID, bgAlpha, fontSize, fontColor
+	// no-op: стиль рендерится через markup в SetPeerName/SetPeerOverlay,
+	// конкретные значения подставляет room.
+	return nil
 }
 
 func (p *gstPipeline) UpdateLayout(cells []layout.Cell) error {

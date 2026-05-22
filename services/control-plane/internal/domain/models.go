@@ -104,6 +104,7 @@ type Layout struct {
 	ShowNames *bool `json:"showNames,omitempty"`
 	// Стиль подписи. Применяется ко всем peer'ам сразу через textoverlay.
 	NameBgAlpha   *float64 `json:"nameBgAlpha,omitempty"`   // 0..1
+	NameBgColor   *string  `json:"nameBgColor,omitempty"`   // "#RRGGBB"
 	NameFontSize  *int     `json:"nameFontSize,omitempty"`  // pt
 	NameFontColor *string  `json:"nameFontColor,omitempty"` // "#RRGGBB"
 }
@@ -111,17 +112,21 @@ type Layout struct {
 func (l Layout) MarshalJSONBytes() ([]byte, error) { return json.Marshal(l) }
 
 // LayoutTemplate — пользовательский шаблон раскладки, переиспользуется между комнатами.
-// Хранит только геометрию ячеек со slot-N плейсхолдерами; конкретные peer-ы привязываются
-// уже в Room Control при применении шаблона к активной комнате.
+// Хранит геометрию ячеек со slot-N плейсхолдерами и стиль подписей. Конкретные peer-ы
+// привязываются в Room Control при применении шаблона к активной комнате.
 type LayoutTemplate struct {
-	ID         uuid.UUID        `json:"id"`
-	Name       string           `json:"name"`
-	Width      int              `json:"width"`
-	Height     int              `json:"height"`
-	Cells      []LayoutCell     `json:"cells"`
-	Background LayoutBackground `json:"background,omitempty"`
-	CreatedBy  *uuid.UUID       `json:"createdBy,omitempty"`
-	CreatedAt  time.Time        `json:"createdAt"`
+	ID            uuid.UUID        `json:"id"`
+	Name          string           `json:"name"`
+	Width         int              `json:"width"`
+	Height        int              `json:"height"`
+	Cells         []LayoutCell     `json:"cells"`
+	Background    LayoutBackground `json:"background,omitempty"`
+	NameBgAlpha   *float64         `json:"nameBgAlpha,omitempty"`
+	NameBgColor   *string          `json:"nameBgColor,omitempty"`
+	NameFontSize  *int             `json:"nameFontSize,omitempty"`
+	NameFontColor *string          `json:"nameFontColor,omitempty"`
+	CreatedBy     *uuid.UUID       `json:"createdBy,omitempty"`
+	CreatedAt     time.Time        `json:"createdAt"`
 }
 
 type RecordingStatus string

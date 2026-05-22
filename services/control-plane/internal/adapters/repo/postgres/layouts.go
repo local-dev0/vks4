@@ -18,14 +18,18 @@ type LayoutTemplates struct{ db *pgxpool.Pool }
 func NewLayoutTemplates(db *pgxpool.Pool) *LayoutTemplates { return &LayoutTemplates{db: db} }
 
 type LayoutTemplateRow struct {
-	ID         uuid.UUID
-	Name       string
-	Width      int
-	Height     int
-	Cells      []byte
-	Background []byte
-	CreatedBy  *uuid.UUID
-	CreatedAt  time.Time
+	ID            uuid.UUID
+	Name          string
+	Width         int
+	Height        int
+	Cells         []byte
+	Background    []byte
+	NameBgAlpha   *float64
+	NameBgColor   *string
+	NameFontSize  *int
+	NameFontColor *string
+	CreatedBy     *uuid.UUID
+	CreatedAt     time.Time
 }
 
 func (r LayoutTemplateRow) Domain() domain.LayoutTemplate {
@@ -34,20 +38,24 @@ func (r LayoutTemplateRow) Domain() domain.LayoutTemplate {
 	var bg domain.LayoutBackground
 	_ = json.Unmarshal(r.Background, &bg)
 	return domain.LayoutTemplate{
-		ID:        r.ID,
-		Name:      r.Name,
-		Width:     r.Width,
-		Height:    r.Height,
-		Cells:     cells,
-		Background: bg,
-		CreatedBy: r.CreatedBy,
-		CreatedAt: r.CreatedAt,
+		ID:            r.ID,
+		Name:          r.Name,
+		Width:         r.Width,
+		Height:        r.Height,
+		Cells:         cells,
+		Background:    bg,
+		NameBgAlpha:   r.NameBgAlpha,
+		NameBgColor:   r.NameBgColor,
+		NameFontSize:  r.NameFontSize,
+		NameFontColor: r.NameFontColor,
+		CreatedBy:     r.CreatedBy,
+		CreatedAt:     r.CreatedAt,
 	}
 }
 
 func (s *LayoutTemplates) List(ctx context.Context) ([]LayoutTemplateRow, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id,name,width,height,cells,background,created_by,created_at
+		SELECT id,name,width,height,cells,background,name_bg_alpha,name_bg_color,name_font_size,name_font_color,created_by,created_at
 		FROM layout_templates ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -56,7 +64,9 @@ func (s *LayoutTemplates) List(ctx context.Context) ([]LayoutTemplateRow, error)
 	var out []LayoutTemplateRow
 	for rows.Next() {
 		r := LayoutTemplateRow{}
-		if err := rows.Scan(&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background, &r.CreatedBy, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background,
+			&r.NameBgAlpha, &r.NameBgColor, &r.NameFontSize, &r.NameFontColor,
+			&r.CreatedBy, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -67,9 +77,11 @@ func (s *LayoutTemplates) List(ctx context.Context) ([]LayoutTemplateRow, error)
 func (s *LayoutTemplates) Get(ctx context.Context, id uuid.UUID) (*LayoutTemplateRow, error) {
 	r := LayoutTemplateRow{}
 	err := s.db.QueryRow(ctx, `
-		SELECT id,name,width,height,cells,background,created_by,created_at
+		SELECT id,name,width,height,cells,background,name_bg_alpha,name_bg_color,name_font_size,name_font_color,created_by,created_at
 		FROM layout_templates WHERE id=$1`, id).Scan(
-		&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background, &r.CreatedBy, &r.CreatedAt)
+		&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background,
+		&r.NameBgAlpha, &r.NameBgColor, &r.NameFontSize, &r.NameFontColor,
+		&r.CreatedBy, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -80,22 +92,30 @@ func (s *LayoutTemplates) Get(ctx context.Context, id uuid.UUID) (*LayoutTemplat
 }
 
 type CreateLayoutTemplateInput struct {
-	Name       string
-	Width      int
-	Height     int
-	Cells      []byte
-	Background []byte
-	CreatedBy  *uuid.UUID
+	Name          string
+	Width         int
+	Height        int
+	Cells         []byte
+	Background    []byte
+	NameBgAlpha   *float64
+	NameBgColor   *string
+	NameFontSize  *int
+	NameFontColor *string
+	CreatedBy     *uuid.UUID
 }
 
 func (s *LayoutTemplates) Create(ctx context.Context, in CreateLayoutTemplateInput) (*LayoutTemplateRow, error) {
 	r := LayoutTemplateRow{}
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO layout_templates (name, width, height, cells, background, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, width, height, cells, background, created_by, created_at`,
-		in.Name, in.Width, in.Height, in.Cells, in.Background, in.CreatedBy).Scan(
-		&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background, &r.CreatedBy, &r.CreatedAt)
+		INSERT INTO layout_templates (name, width, height, cells, background, name_bg_alpha, name_bg_color, name_font_size, name_font_color, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, name, width, height, cells, background, name_bg_alpha, name_bg_color, name_font_size, name_font_color, created_by, created_at`,
+		in.Name, in.Width, in.Height, in.Cells, in.Background,
+		in.NameBgAlpha, in.NameBgColor, in.NameFontSize, in.NameFontColor,
+		in.CreatedBy).Scan(
+		&r.ID, &r.Name, &r.Width, &r.Height, &r.Cells, &r.Background,
+		&r.NameBgAlpha, &r.NameBgColor, &r.NameFontSize, &r.NameFontColor,
+		&r.CreatedBy, &r.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +133,8 @@ func (s *LayoutTemplates) Update(ctx context.Context, id uuid.UUID, set map[stri
 	for k, v := range set {
 		// whitelist допустимых колонок
 		switch k {
-		case "name", "width", "height", "cells", "background":
+		case "name", "width", "height", "cells", "background",
+			"name_bg_alpha", "name_bg_color", "name_font_size", "name_font_color":
 			cols = append(cols, k+"=$"+itoaN(idx))
 			args = append(args, v)
 			idx++

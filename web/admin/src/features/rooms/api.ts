@@ -23,6 +23,7 @@ export interface Layout {
   cells?: Array<{ id: string; x: number; y: number; w: number; h: number; zIndex?: number; vad?: boolean }>;
   showNames?: boolean;
   nameBgAlpha?: number;     // 0..1
+  nameBgColor?: string;     // "#RRGGBB"
   nameFontSize?: number;    // pt
   nameFontColor?: string;   // "#RRGGBB"
 }

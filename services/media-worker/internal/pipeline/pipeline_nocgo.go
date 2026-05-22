@@ -43,5 +43,6 @@ func (p *noopPipeline) ASDLevel() <-chan ASDLevel                { return p.asd 
 func (p *noopPipeline) UpdateLayout(cells []layout.Cell) error   { return nil }
 func (p *noopPipeline) SetPeerName(peerID, name string) error    { return nil }
 func (p *noopPipeline) SetPeerStyle(peerID string, _ float64, _ int, _ string) error { return nil }
+func (p *noopPipeline) SetPeerOverlay(peerID, markup string, fontSize int) error    { return nil }
 func (p *noopPipeline) StartRecording(filename string) error     { return nil }
 func (p *noopPipeline) StopRecording() (string, int64, error)    { return "", 0, nil }

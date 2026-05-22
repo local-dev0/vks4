@@ -4,6 +4,7 @@ package room
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -70,6 +71,7 @@ type Room struct {
 	showNames bool
 	// Стиль подписи peer-ов в MCU output (применяется ко всем).
 	nameBgAlpha   float64 // 0..1
+	nameBgColor   string  // "#RRGGBB"
 	nameFontSize  int     // pt
 	nameFontColor string  // "#RRGGBB"
 
@@ -126,6 +128,7 @@ func New(opts Options) *Room {
 		createdAt:  time.Now(),
 		showNames:     true, // по умолчанию имена включены
 		nameBgAlpha:   0.6,
+		nameBgColor:   "#000000",
 		nameFontSize:  14,
 		nameFontColor: "#FFFFFF",
 	}
@@ -192,20 +195,15 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 			break
 		}
 	}
-	showNames := r.showNames
-	style := struct {
-		alpha float64
-		size  int
-		color string
-	}{r.nameBgAlpha, r.nameFontSize, r.nameFontColor}
+	on := r.showNames
+	a, bg, sz, fg := r.nameBgAlpha, r.nameBgColor, r.nameFontSize, r.nameFontColor
 	r.mu.Unlock()
 	if !r.sfu {
-		_ = r.pipeline.SetPeerStyle(peerID, style.alpha, style.size, style.color)
-		if showNames && displayName != "" {
-			_ = r.pipeline.SetPeerName(peerID, displayName)
-		} else {
-			_ = r.pipeline.SetPeerName(peerID, " ")
+		markup := ""
+		if on && displayName != "" {
+			markup = buildOverlayMarkup(displayName, bg, a, fg)
 		}
+		_ = r.pipeline.SetPeerOverlay(peerID, markup, sz)
 		r.applyLayout()
 	}
 	return answer, nil
@@ -213,10 +211,13 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 
 // SetNameStyle обновляет стиль подписи peer-ов. Все указатели опциональны — nil оставляет
 // текущее значение. Применяет ко всем уже подключенным peer'ам.
-func (r *Room) SetNameStyle(alpha *float64, fontSize *int, fontColor *string) {
+func (r *Room) SetNameStyle(alpha *float64, bgColor *string, fontSize *int, fontColor *string) {
 	r.mu.Lock()
 	if alpha != nil {
 		r.nameBgAlpha = *alpha
+	}
+	if bgColor != nil {
+		r.nameBgColor = *bgColor
 	}
 	if fontSize != nil {
 		r.nameFontSize = *fontSize
@@ -224,38 +225,65 @@ func (r *Room) SetNameStyle(alpha *float64, fontSize *int, fontColor *string) {
 	if fontColor != nil {
 		r.nameFontColor = *fontColor
 	}
-	a, s, c := r.nameBgAlpha, r.nameFontSize, r.nameFontColor
-	peers := make([]string, 0, len(r.displayNames))
-	for k := range r.displayNames {
-		peers = append(peers, k)
-	}
 	r.mu.Unlock()
-	r.log.Info("SetNameStyle", zap.Float64("alpha", a), zap.Int("size", s), zap.String("color", c))
-	for _, peerID := range peers {
-		_ = r.pipeline.SetPeerStyle(peerID, a, s, c)
-	}
+	// Перерисовать оверлеи всех текущих peers с новым стилем.
+	r.refreshAllOverlays()
 }
 
-// SetShowNames переключает отображение имён в MCU output.
-// Применяет ко всем уже подключенным peer'ам через pipeline.SetPeerName.
-func (r *Room) SetShowNames(on bool) {
-	r.mu.Lock()
-	r.showNames = on
+// refreshAllOverlays перегенерирует markup для всех peer-ов и пушит в pipeline.
+func (r *Room) refreshAllOverlays() {
+	r.mu.RLock()
+	on := r.showNames
+	a, bg, sz, fg := r.nameBgAlpha, r.nameBgColor, r.nameFontSize, r.nameFontColor
 	names := make(map[string]string, len(r.displayNames))
 	for k, v := range r.displayNames {
 		names[k] = v
 	}
-	r.mu.Unlock()
-	r.log.Info("SetShowNames", zap.String("room", r.ID), zap.Bool("on", on), zap.Int("peers", len(names)))
+	r.mu.RUnlock()
 	for peerID, name := range names {
-		text := " "
+		markup := ""
 		if on && name != "" {
-			text = name
+			markup = buildOverlayMarkup(name, bg, a, fg)
 		}
-		if err := r.pipeline.SetPeerName(peerID, text); err != nil {
-			r.log.Warn("SetPeerName failed", zap.String("peer", peerID), zap.Error(err))
-		}
+		_ = r.pipeline.SetPeerOverlay(peerID, markup, sz)
 	}
+}
+
+// buildOverlayMarkup собирает Pango markup со span'ом нужного цвета фона/текста и alpha.
+// bgAlpha 0..1 → "NN%" процент (0%=полностью прозрачный, 100%=плотный).
+func buildOverlayMarkup(name, bgHex string, bgAlpha float64, fgHex string) string {
+	if bgAlpha < 0 {
+		bgAlpha = 0
+	}
+	if bgAlpha > 1 {
+		bgAlpha = 1
+	}
+	if bgHex == "" {
+		bgHex = "#000000"
+	}
+	if fgHex == "" {
+		fgHex = "#FFFFFF"
+	}
+	// pango escape: minimum &, <, > (имена обычно без них, но защитимся).
+	esc := func(s string) string {
+		s = strings.ReplaceAll(s, "&", "&amp;")
+		s = strings.ReplaceAll(s, "<", "&lt;")
+		s = strings.ReplaceAll(s, ">", "&gt;")
+		return s
+	}
+	return fmt.Sprintf(
+		`<span background="%s" bgalpha="%d%%" foreground="%s"> %s </span>`,
+		bgHex, int(bgAlpha*100), fgHex, esc(name),
+	)
+}
+
+// SetShowNames переключает отображение имён в MCU output.
+func (r *Room) SetShowNames(on bool) {
+	r.mu.Lock()
+	r.showNames = on
+	r.mu.Unlock()
+	r.log.Info("SetShowNames", zap.String("room", r.ID), zap.Bool("on", on))
+	r.refreshAllOverlays()
 }
 
 // SlotOf возвращает slot index для peer'а (-1 если не назначен).

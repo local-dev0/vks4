@@ -59,6 +59,14 @@ export function LayoutEditor() {
   });
   const [name, setName] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Стиль подписи peer-ов хранится в шаблоне. Локально храним в state, чтобы менять без
+  // сетевых запросов до клика "Сохранить".
+  const [nameStyle, setNameStyle] = useState({
+    bgAlpha: 0.6,
+    bgColor: "#000000",
+    fontSize: 14,
+    fontColor: "#FFFFFF",
+  });
 
   useEffect(() => {
     if (tpl.data) {
@@ -70,6 +78,12 @@ export function LayoutEditor() {
         cells: tpl.data.cells,
       });
       setName(tpl.data.name);
+      setNameStyle({
+        bgAlpha: tpl.data.nameBgAlpha ?? 0.6,
+        bgColor: tpl.data.nameBgColor ?? "#000000",
+        fontSize: tpl.data.nameFontSize ?? 14,
+        fontColor: tpl.data.nameFontColor ?? "#FFFFFF",
+      });
     }
   }, [tpl.data]);
 
@@ -81,6 +95,10 @@ export function LayoutEditor() {
         height: layout.height ?? 720,
         cells: layout.cells ?? [],
         background: layout.background,
+        nameBgAlpha: nameStyle.bgAlpha,
+        nameBgColor: nameStyle.bgColor,
+        nameFontSize: nameStyle.fontSize,
+        nameFontColor: nameStyle.fontColor,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["layout-template", id] });
@@ -249,6 +267,47 @@ export function LayoutEditor() {
                   </label>
                 </div>
               )}
+            </section>
+
+            <section className="card p-3 space-y-2">
+              <div className="text-xs font-medium uppercase text-slate-500">Стиль подписи</div>
+              <label className="block text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span>Прозрачность фона</span>
+                  <span className="text-slate-400 font-mono">{Math.round(nameStyle.bgAlpha * 100)}%</span>
+                </div>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={nameStyle.bgAlpha}
+                  onChange={(e) => setNameStyle((p) => ({ ...p, bgAlpha: +e.target.value }))}
+                  className="w-full" />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-xs space-y-1">
+                  <div>Цвет фона</div>
+                  <input type="color" value={nameStyle.bgColor}
+                    onChange={(e) => setNameStyle((p) => ({ ...p, bgColor: e.target.value.toUpperCase() }))}
+                    className="w-full h-8" />
+                </label>
+                <label className="block text-xs space-y-1">
+                  <div>Цвет текста</div>
+                  <input type="color" value={nameStyle.fontColor}
+                    onChange={(e) => setNameStyle((p) => ({ ...p, fontColor: e.target.value.toUpperCase() }))}
+                    className="w-full h-8" />
+                </label>
+              </div>
+              <label className="block text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span>Размер шрифта</span>
+                  <span className="text-slate-400 font-mono">{nameStyle.fontSize} pt</span>
+                </div>
+                <input type="range" min={8} max={32} step={1}
+                  value={nameStyle.fontSize}
+                  onChange={(e) => setNameStyle((p) => ({ ...p, fontSize: +e.target.value }))}
+                  className="w-full" />
+              </label>
+              <div className="text-[10px] text-slate-500 italic">
+                Применяется при нажатии «Сохранить» вверху страницы.
+              </div>
             </section>
           </aside>
 

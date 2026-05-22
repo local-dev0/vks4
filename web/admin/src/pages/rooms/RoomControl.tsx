@@ -115,27 +115,23 @@ export function RoomControl() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["room", id] }),
   });
 
-  // Стиль подписи peer-ов.
-  const styleBgAlpha = room.data?.defaultLayout?.nameBgAlpha ?? 0.6;
-  const styleFontSize = room.data?.defaultLayout?.nameFontSize ?? 14;
-  const styleFontColor = room.data?.defaultLayout?.nameFontColor ?? "#FFFFFF";
-  const setStyle = useMutation({
-    mutationFn: (patch: { nameBgAlpha?: number; nameFontSize?: number; nameFontColor?: string }) => {
-      const cur = room.data?.defaultLayout ?? { mode: "custom" };
-      return RoomsApi.layout(id, { ...cur, ...patch });
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["room", id] }),
-  });
   const applyTemplate = useMutation({
     mutationFn: async (tplId: string) => {
       const t = await LayoutsApi.get(tplId);
-      // PATCH room.defaultLayout = { mode: "custom", ...t.cells }
+      // Применяем шаблон целиком: cells + стиль подписи.
+      // showNames сохраняем текущее значение комнаты, чтобы оператор не потерял свой toggle.
+      const curShow = room.data?.defaultLayout?.showNames;
       await RoomsApi.layout(id, {
         mode: "custom",
         width: t.width,
         height: t.height,
         background: t.background,
         cells: t.cells,
+        nameBgAlpha: t.nameBgAlpha,
+        nameBgColor: t.nameBgColor,
+        nameFontSize: t.nameFontSize,
+        nameFontColor: t.nameFontColor,
+        ...(curShow !== undefined ? { showNames: curShow } : {}),
       });
     },
     onSuccess: () => {
@@ -265,43 +261,6 @@ export function RoomControl() {
               </div>
             </section>
 
-            {/* Стиль подписи peer-ов (textoverlay) */}
-            <section className="card p-3 space-y-2">
-              <div className="text-xs font-medium uppercase text-slate-500">Стиль подписи</div>
-              <label className="block text-xs space-y-1">
-                <div className="flex justify-between">
-                  <span>Фон (затемнение)</span>
-                  <span className="text-slate-400 font-mono">{Math.round(styleBgAlpha * 100)}%</span>
-                </div>
-                <input
-                  type="range" min={0} max={1} step={0.05}
-                  value={styleBgAlpha}
-                  onChange={(e) => setStyle.mutate({ nameBgAlpha: +e.target.value })}
-                  className="w-full"
-                />
-              </label>
-              <label className="block text-xs space-y-1">
-                <div className="flex justify-between">
-                  <span>Размер шрифта</span>
-                  <span className="text-slate-400 font-mono">{styleFontSize} pt</span>
-                </div>
-                <input
-                  type="range" min={8} max={32} step={1}
-                  value={styleFontSize}
-                  onChange={(e) => setStyle.mutate({ nameFontSize: +e.target.value })}
-                  className="w-full"
-                />
-              </label>
-              <label className="block text-xs space-y-1">
-                <div>Цвет текста</div>
-                <input
-                  type="color"
-                  value={styleFontColor}
-                  onChange={(e) => setStyle.mutate({ nameFontColor: e.target.value.toUpperCase() })}
-                  className="w-full h-8"
-                />
-              </label>
-            </section>
 
             <section className="card p-3 text-xs space-y-1">
               <div className="font-medium uppercase text-slate-500 flex items-center gap-1">

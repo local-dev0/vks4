@@ -48,10 +48,14 @@ type Pipeline interface {
 	UpdateLayout(cells []layout.Cell) error
 
 	// SetPeerName — обновляет текст подписи (textoverlay) на peer's video.
+	// Передавать готовый Pango markup (или пустую строку для скрытия overlay).
 	SetPeerName(peerID, name string) error
 
-	// SetPeerStyle — стиль подписи: bg alpha (0..1), font size (pt), font color (#RRGGBB).
+	// SetPeerStyle — устаревшее, в текущей реализации no-op (стиль через markup в SetPeerName).
 	SetPeerStyle(peerID string, bgAlpha float64, fontSize int, fontColor string) error
+
+	// SetPeerOverlay — markup + размер шрифта.
+	SetPeerOverlay(peerID, markup string, fontSize int) error
 
 	// Recording on/off; возвращает путь к файлу при остановке.
 	StartRecording(filename string) error

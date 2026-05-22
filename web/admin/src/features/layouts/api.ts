@@ -10,6 +10,10 @@ export interface LayoutTemplate {
   height: number;
   cells: NonNullable<Layout["cells"]>;
   background?: { color?: string; url?: string };
+  nameBgAlpha?: number;
+  nameBgColor?: string;
+  nameFontSize?: number;
+  nameFontColor?: string;
   createdBy?: string;
   createdAt: string;
 }
@@ -20,6 +24,10 @@ export interface LayoutTemplateInput {
   height: number;
   cells: NonNullable<Layout["cells"]>;
   background?: { color?: string; url?: string };
+  nameBgAlpha?: number;
+  nameBgColor?: string;
+  nameFontSize?: number;
+  nameFontColor?: string;
 }
 
 export const LayoutsApi = {

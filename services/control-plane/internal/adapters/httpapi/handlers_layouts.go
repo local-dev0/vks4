@@ -44,11 +44,15 @@ func (h *LayoutHandlers) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTemplateReq struct {
-	Name       string                  `json:"name"`
-	Width      int                     `json:"width"`
-	Height     int                     `json:"height"`
-	Cells      []domain.LayoutCell     `json:"cells"`
-	Background domain.LayoutBackground `json:"background"`
+	Name          string                  `json:"name"`
+	Width         int                     `json:"width"`
+	Height        int                     `json:"height"`
+	Cells         []domain.LayoutCell     `json:"cells"`
+	Background    domain.LayoutBackground `json:"background"`
+	NameBgAlpha   *float64                `json:"nameBgAlpha,omitempty"`
+	NameBgColor   *string                 `json:"nameBgColor,omitempty"`
+	NameFontSize  *int                    `json:"nameFontSize,omitempty"`
+	NameFontColor *string                 `json:"nameFontColor,omitempty"`
 }
 
 func (h *LayoutHandlers) Create(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +64,8 @@ func (h *LayoutHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	t, err := h.tpl.Create(r.Context(), UserIDFromCtx(r.Context()), usecase.CreateLayoutTemplateInput{
 		Name: in.Name, Width: in.Width, Height: in.Height,
 		Cells: in.Cells, Background: in.Background,
+		NameBgAlpha: in.NameBgAlpha, NameBgColor: in.NameBgColor,
+		NameFontSize: in.NameFontSize, NameFontColor: in.NameFontColor,
 	})
 	if err != nil {
 		writeAppError(w, err)
