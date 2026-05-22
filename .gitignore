@@ -1,0 +1,48 @@
+# Go
+bin/
+dist/
+*.test
+*.out
+coverage.*
+vendor/
+
+# Node
+node_modules/
+.pnp.*
+.cache/
+.parcel-cache/
+.eslintcache
+.vite/
+*.tsbuildinfo
+
+# Build
+build/
+out/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Docker volumes (mounted into ./data in compose)
+data/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated
+api/gen/
+**/openapi.gen.ts
+**/sqlc.gen.go
