@@ -46,3 +46,7 @@ desktop.ini
 api/gen/
 **/openapi.gen.ts
 **/sqlc.gen.go
+
+# claude
+.claude/
+.github/
