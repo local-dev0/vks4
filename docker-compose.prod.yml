@@ -1,0 +1,57 @@
+# Production-overrides. Использовать: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+name: vks4
+
+services:
+
+  control-plane:
+    image: ghcr.io/your-org/vks4-control-plane:${VKS_VERSION:-latest}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  signaling:
+    image: ghcr.io/your-org/vks4-signaling:${VKS_VERSION:-latest}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+
+  media-router:
+    image: ghcr.io/your-org/vks4-media-router:${VKS_VERSION:-latest}
+    restart: always
+
+  media-worker:
+    image: ghcr.io/your-org/vks4-media-worker:${VKS_VERSION:-latest}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 8G
+
+  sip-gateway:
+    image: ghcr.io/your-org/vks4-sip-gateway:${VKS_VERSION:-latest}
+    restart: always
+
+  admin-web:
+    image: ghcr.io/your-org/vks4-admin-web:${VKS_VERSION:-latest}
+    restart: always
+
+  postgres:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+
+  redis:
+    restart: always
+
+  minio:
+    restart: always

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package vks4.signaling.v1;
+
+option go_package = "github.com/vks4/vks4/api/gen/go/signaling/v1;signalingv1";
+
+import "google/protobuf/empty.proto";
+
+// Signaling сервис вызывается из control-plane (broadcast в комнату).
+service Signaling {
+  rpc Broadcast (BroadcastRequest) returns (google.protobuf.Empty);
+  rpc Kick (KickRequest) returns (google.protobuf.Empty);
+}
+
+message BroadcastRequest {
+  string room_id = 1;
+  string event = 2;    // напр. "layout", "active-speaker"
+  bytes  payload = 3;  // произвольный JSON
+}
+
+message KickRequest {
+  string room_id = 1;
+  string peer_id = 2;
+  string reason = 3;
+}

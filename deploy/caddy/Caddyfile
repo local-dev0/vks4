@@ -1,0 +1,73 @@
+# vks4 — Caddy edge reverse proxy.
+# В dev используем local CA / самоподписанный TLS.
+# В prod замените на ваш домен, Caddy сам получит Let's Encrypt:
+#   vks4.example.com {
+#       tls user@example.com
+#       ...
+#   }
+
+{
+    debug
+    auto_https disable_redirects
+    # При пустом SNI (запрос по IP) Caddy подставит этот hostname для выбора сертификата.
+    default_sni 62.238.21.186
+}
+
+(security_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        Permissions-Policy        "camera=*, microphone=*, display-capture=*"
+        Content-Security-Policy   "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss: https:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'"
+        -Server
+    }
+}
+
+http://, http://localhost, http://127.0.0.1 {
+    redir https://{host}{uri} permanent
+}
+
+# Явный site-блок: Caddy предварительно выпустит internal-сертификаты для всех
+# перечисленных адресов (включая IP). В prod замените на свой домен.
+# При SNI, не совпадающем с этим списком, ставьте `default_sni` или whildcard.
+localhost, 127.0.0.1, 62.238.21.186 {
+    tls internal {
+        key_type rsa2048
+    }
+
+    import security_headers
+
+    # REST API — без strip префикса, control-plane слушает /api/v1/...
+    handle /api/* {
+        reverse_proxy control-plane:8080 {
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # WebSocket signaling — endpoint /ws на сервере signaling
+    handle /ws* {
+        reverse_proxy signaling:8081 {
+            header_up X-Real-IP {remote_host}
+            transport http {
+                versions 1.1
+            }
+        }
+    }
+
+    # Loki proxy (доступ ограничен на уровне UI / в roadmap — в control-plane)
+    handle /loki/* {
+        reverse_proxy loki:3100
+    }
+
+    # Grafana embed (для monitoring страницы)
+    handle /grafana/* {
+        reverse_proxy grafana:3000
+    }
+
+    # Admin SPA
+    handle {
+        reverse_proxy admin-web:8080
+    }
+}

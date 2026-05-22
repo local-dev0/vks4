@@ -1,0 +1,43 @@
+
+ => [signaling build 7/7] RUN go build -trimpath -ldflags="-s -w" -o /out/signaling ./cmd/ser  106.1s
+ => [media-worker build 2/7] WORKDIR /src                                                        0.1s
+ => [media-worker build 3/7] RUN apt-get update && apt-get install -y --no-install-recommends   43.5s
+ => CANCELED [control-plane build 7/7] RUN go build -trimpath -ldflags="-s -w" -o /out/contro  109.9s
+ => [media-worker build 4/7] COPY go.mod go.sum* ./                                              0.2s
+ => [media-worker build 5/7] COPY . .                                                            0.1s
+ => [media-worker build 6/7] RUN go mod tidy                                                    12.4s
+ => CANCELED [media-worker build 7/7] RUN go build -trimpath -ldflags="-s -w" -o /out/media-wo  59.1s
+ => [admin-web build 5/7] COPY . .                                                               0.8s
+ => [admin-web build 6/7] RUN npm run gen:openapi || true                                        4.1s
+ => [media-worker runtime 3/5] WORKDIR /app                                                      0.3s
+ => ERROR [admin-web build 7/7] RUN npm run build                                               16.6s
+ => [signaling runtime 3/3] COPY --from=build /out/signaling /app/bin/signaling                  0.1s
+ => [signaling] exporting to image                                                               1.5s
+ => => exporting layers                                                                          1.1s
+ => => exporting manifest sha256:cfc4dcd3a16d6a7d26937dbbe90159b9b410b630a6989342ebdc85035895ad  0.0s
+ => => exporting config sha256:f5162687c99259736abca790b3a3927666bb729e84d804eacd6737b637725247  0.0s
+ => => exporting attestation manifest sha256:ca4030944abf4811fe0362c7e13755491fda4ca8cd827eaf11  0.0s
+ => => exporting manifest list sha256:437165fdc291435ae0338ffaa47b348bcba69a1e22df3a31bf82d1a84  0.0s
+ => => naming to docker.io/vks4/signaling:dev                                                    0.0s
+ => => unpacking to docker.io/vks4/signaling:dev                                                 0.3s
+ => [signaling] resolving provenance for metadata file                                           0.0s
+------
+ > [admin-web build 7/7] RUN npm run build:
+0.827
+0.827 > vks4-admin@0.1.0 build
+0.827 > tsc -b && vite build
+0.827
+16.27 src/app/layout/AppShell.tsx(30,19): error TS2339: Property 'roles' does not exist on type '{ readonly to: "/"; readonly label: "Dashboard"; readonly icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>; } | ... 6 more ... | { ...; }'.
+16.27   Property 'roles' does not exist on type '{ readonly to: "/"; readonly label: "Dashboard"; readonly icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>; }'.
+16.27 src/app/layout/AppShell.tsx(30,41): error TS2339: Property 'roles' does not exist on type '{ readonly to: "/"; readonly label: "Dashboard"; readonly icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>; } | ... 6 more ... | { ...; }'.
+16.27   Property 'roles' does not exist on type '{ readonly to: "/"; readonly label: "Dashboard"; readonly icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>; }'.
+------
+[+] build 0/5
+ ⠙ Image vks4/control-plane:dev Building                                                        126.3s
+ ⠙ Image vks4/media-router:dev  Building                                                        126.3s
+ ⠙ Image vks4/media-worker:dev  Building                                                        126.3s
+ ⠙ Image vks4/admin-web:dev     Building                                                        126.3s
+ ⠙ Image vks4/signaling:dev     Building                                                        126.3s
+target admin-web: failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+
+make: *** [Makefile:46: docker] Error 1

@@ -1,0 +1,555 @@
+openapi: 3.1.0
+info:
+  title: vks4 Control Plane API
+  version: 0.1.0
+  description: |
+    REST API сервиса control-plane: аутентификация, RBAC, комнаты,
+    участники, layout, записи, пользователи, аудит, метрики.
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - { name: auth }
+  - { name: rooms }
+  - { name: participants }
+  - { name: layouts }
+  - { name: recordings }
+  - { name: users }
+  - { name: monitoring }
+  - { name: system }
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/AuthTokens" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh]
+              properties:
+                refresh: { type: string }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/AuthTokens" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      responses:
+        "204": { description: ok }
+
+  /me:
+    get:
+      tags: [auth]
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+
+  /rooms:
+    get:
+      tags: [rooms]
+      parameters:
+        - { in: query, name: q,      schema: { type: string } }
+        - { in: query, name: limit,  schema: { type: integer, default: 50, maximum: 200 } }
+        - { in: query, name: offset, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Room" } }
+                  total: { type: integer }
+    post:
+      tags: [rooms]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoomCreate" }
+      responses:
+        "201":
+          description: created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Room" } } }
+
+  /rooms/{roomId}:
+    parameters:
+      - { in: path, name: roomId, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [rooms]
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Room" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [rooms]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoomUpdate" }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Room" } } }
+    delete:
+      tags: [rooms]
+      responses:
+        "204": { description: deleted }
+
+  /rooms/{roomId}/lock:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [rooms]
+      responses: { "204": { description: locked } }
+
+  /rooms/{roomId}/unlock:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [rooms]
+      responses: { "204": { description: unlocked } }
+
+  /rooms/{roomId}/layout:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    put:
+      tags: [layouts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Layout" }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Layout" } } }
+
+  /rooms/{roomId}/participants:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [participants]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Participant" }
+
+  /rooms/{roomId}/participants/{peerId}:
+    parameters:
+      - { in: path, name: roomId, required: true, schema: { type: string, format: uuid } }
+      - { in: path, name: peerId, required: true, schema: { type: string } }
+    delete:
+      tags: [participants]
+      summary: kick
+      responses: { "204": { description: kicked } }
+    patch:
+      tags: [participants]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                muted: { type: boolean }
+                role:  { $ref: "#/components/schemas/ParticipantRole" }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Participant" } } }
+
+  /rooms/{roomId}/stats:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [monitoring]
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/RoomStats" } } }
+
+  /rooms/{roomId}/recording:
+    parameters: [ { in: path, name: roomId, required: true, schema: { type: string, format: uuid } } ]
+    post:
+      tags: [recordings]
+      summary: start
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Recording" } } }
+    delete:
+      tags: [recordings]
+      summary: stop
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Recording" } } }
+
+  /recordings:
+    get:
+      tags: [recordings]
+      parameters:
+        - { in: query, name: roomId, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Recording" }
+
+  /recordings/{id}:
+    parameters: [ { in: path, name: id, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [recordings]
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/Recording" } } }
+    delete:
+      tags: [recordings]
+      responses: { "204": { description: deleted } }
+
+  /recordings/{id}/download:
+    parameters: [ { in: path, name: id, required: true, schema: { type: string, format: uuid } } ]
+    get:
+      tags: [recordings]
+      responses:
+        "302": { description: redirect to presigned URL }
+
+  /users:
+    get:
+      tags: [users]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+    post:
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserCreate" }
+      responses:
+        "201":
+          description: created
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+
+  /users/{id}:
+    parameters: [ { in: path, name: id, required: true, schema: { type: string, format: uuid } } ]
+    patch:
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:    { $ref: "#/components/schemas/Role" }
+                disabled: { type: boolean }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    delete:
+      tags: [users]
+      responses: { "204": { description: deleted } }
+
+  /monitoring/system:
+    get:
+      tags: [monitoring]
+      responses:
+        "200":
+          description: ok
+          content: { application/json: { schema: { $ref: "#/components/schemas/SystemHealth" } } }
+
+  /audit:
+    get:
+      tags: [system]
+      parameters:
+        - { in: query, name: limit,  schema: { type: integer, default: 100 } }
+        - { in: query, name: offset, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+
+  /health:
+    get:
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:  { type: string, enum: [ok, degraded, down] }
+                  version: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Unauthorized:
+      description: unauthorized
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:    { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:    { type: string, format: email }
+        password: { type: string }
+
+    AuthTokens:
+      type: object
+      required: [access, refresh, expiresIn]
+      properties:
+        access:    { type: string }
+        refresh:   { type: string }
+        expiresIn: { type: integer }
+
+    Role:
+      type: string
+      enum: [admin, operator, moderator, viewer]
+
+    User:
+      type: object
+      required: [id, email, role, createdAt]
+      properties:
+        id:        { type: string, format: uuid }
+        email:     { type: string, format: email }
+        name:      { type: string }
+        role:      { $ref: "#/components/schemas/Role" }
+        disabled:  { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    UserCreate:
+      type: object
+      required: [email, password, role]
+      properties:
+        email:    { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        name:     { type: string }
+        role:     { $ref: "#/components/schemas/Role" }
+
+    RoomMode:
+      type: string
+      enum: [meeting, lecture, webinar]
+
+    Room:
+      type: object
+      required: [id, name, mode, createdAt, locked, recording, defaultLayout]
+      properties:
+        id:             { type: string, format: uuid }
+        name:           { type: string }
+        description:    { type: string }
+        mode:           { $ref: "#/components/schemas/RoomMode" }
+        maxParticipants: { type: integer, default: 50 }
+        waitingRoom:    { type: boolean, default: false }
+        locked:         { type: boolean }
+        recording:      { type: boolean }
+        defaultLayout:  { $ref: "#/components/schemas/Layout" }
+        joinUrl:        { type: string }
+        createdAt:      { type: string, format: date-time }
+        createdBy:      { type: string, format: uuid }
+
+    RoomCreate:
+      type: object
+      required: [name]
+      properties:
+        name:            { type: string }
+        description:     { type: string }
+        mode:            { $ref: "#/components/schemas/RoomMode", default: meeting }
+        maxParticipants: { type: integer, default: 50 }
+        waitingRoom:     { type: boolean, default: false }
+        defaultLayout:   { $ref: "#/components/schemas/Layout" }
+
+    RoomUpdate:
+      type: object
+      properties:
+        name:            { type: string }
+        description:     { type: string }
+        mode:            { $ref: "#/components/schemas/RoomMode" }
+        maxParticipants: { type: integer }
+        waitingRoom:     { type: boolean }
+        defaultLayout:   { $ref: "#/components/schemas/Layout" }
+
+    LayoutMode:
+      type: string
+      enum: [grid, active_speaker, lecture, pip, custom]
+
+    LayoutCell:
+      type: object
+      required: [id, x, y, w, h]
+      properties:
+        id:     { type: string, description: "peerId или 'speaker'/'presenter'" }
+        x:      { type: number }
+        y:      { type: number }
+        w:      { type: number }
+        h:      { type: number }
+        zIndex: { type: integer, default: 0 }
+
+    Layout:
+      type: object
+      required: [mode]
+      properties:
+        mode:    { $ref: "#/components/schemas/LayoutMode" }
+        width:   { type: integer, default: 1280 }
+        height:  { type: integer, default: 720 }
+        background:
+          type: object
+          properties:
+            color: { type: string, default: "#000000" }
+            url:   { type: string }
+        logo:
+          type: object
+          properties:
+            url: { type: string }
+            x:   { type: number }
+            y:   { type: number }
+            w:   { type: number }
+            h:   { type: number }
+        cells:
+          type: array
+          items: { $ref: "#/components/schemas/LayoutCell" }
+
+    ParticipantRole:
+      type: string
+      enum: [host, presenter, attendee]
+
+    Participant:
+      type: object
+      required: [peerId, displayName, role, joinedAt]
+      properties:
+        peerId:      { type: string }
+        userId:      { type: string, format: uuid, nullable: true }
+        displayName: { type: string }
+        role:        { $ref: "#/components/schemas/ParticipantRole" }
+        muted:       { type: boolean }
+        videoOff:    { type: boolean }
+        joinedAt:    { type: string, format: date-time }
+        connection:
+          type: object
+          properties:
+            transport: { type: string, enum: [webrtc, sip, h323] }
+            rtt:       { type: number }
+            jitter:    { type: number }
+            loss:      { type: number }
+            bitrate:   { type: integer }
+
+    RoomStats:
+      type: object
+      properties:
+        roomId:       { type: string, format: uuid }
+        participants: { type: integer }
+        durationSec:  { type: integer }
+        videoBitrate: { type: integer }
+        audioBitrate: { type: integer }
+        cpu:          { type: number, description: "encoder CPU%" }
+        timestamp:    { type: string, format: date-time }
+
+    Recording:
+      type: object
+      required: [id, roomId, status, startedAt]
+      properties:
+        id:        { type: string, format: uuid }
+        roomId:    { type: string, format: uuid }
+        status:    { type: string, enum: [running, finished, failed] }
+        startedAt: { type: string, format: date-time }
+        endedAt:   { type: string, format: date-time, nullable: true }
+        sizeBytes: { type: integer, nullable: true }
+        url:       { type: string, nullable: true }
+
+    SystemHealth:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:     { type: string }
+              role:   { type: string }
+              cpu:    { type: number }
+              memory: { type: number }
+              status: { type: string, enum: [up, down, degraded] }
+        rooms:        { type: integer }
+        participants: { type: integer }
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              level:   { type: string, enum: [info, warning, critical] }
+              message: { type: string }
+
+    AuditEntry:
+      type: object
+      properties:
+        id:        { type: string, format: uuid }
+        actorId:   { type: string, format: uuid }
+        action:    { type: string }
+        target:    { type: string }
+        payload:   { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }

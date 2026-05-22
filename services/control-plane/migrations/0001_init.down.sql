@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS recordings;
+DROP TABLE IF EXISTS rooms;
+DROP TABLE IF EXISTS users;

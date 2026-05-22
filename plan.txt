@@ -1,0 +1,195 @@
+Ты — senior backend/video infrastructure engineer и architect. Спроектируй и реализуй production-ready MCU видеоконференц-сервер корпоративного уровня.
+
+Требования к системе:
+
+Общая архитектура
+Архитектура MCU (не SFU).
+Сервер должен микшировать аудио и видео на стороне сервера.
+Поддержка:
+WebRTC клиентов (браузеры Chromium/Firefox/Safari)
+SIP терминалов
+H.323 терминалов
+Возможность подключения legacy hardware codecs/polycom/cisco endpoints.
+Масштабируемая модульная архитектура.
+Минимальные задержки.
+Высокая отказоустойчивость.
+Поддержка NAT traversal.
+Возможность горизонтального масштабирования.
+Технологический стек
+
+Использовать ТОЛЬКО современный стек и поддерживаемые библиотеки.
+НЕ использовать:
+
+устаревшие SIP/H323 библиотеки
+abandoned проекты
+deprecated API
+jQuery
+AngularJS
+старые версии bootstrap
+monolithic legacy solutions
+
+Предпочтения:
+
+Backend:
+Rust ИЛИ Go
+Media processing:
+GStreamer
+Pion WebRTC
+LiveKit components (если уместно)
+FFmpeg только там, где действительно нужен
+Frontend:
+React
+TypeScript
+Vite
+Tailwind
+Web admin:
+modern SPA
+Database:
+PostgreSQL
+Cache/queue:
+Redis
+API:
+REST + WebSocket
+Auth:
+JWT/OAuth2
+Reverse proxy:
+Traefik или Caddy
+Containerization:
+Docker
+Docker Compose
+Optional:
+Kubernetes-ready architecture
+Функциональность MCU
+
+Реализовать:
+
+серверное микширование видео
+server-side compositing layouts
+active speaker detection
+voice activity detection
+dynamic layout switching
+adaptive bitrate
+simulcast support
+recording conferences
+screen sharing
+chat/datachannel
+transcoding
+audio mixing
+DTMF support
+SIP registration
+SIP trunk support
+H.323 gateway
+conference rooms
+waiting rooms
+moderator controls
+participant roles
+statistics/metrics
+Layout engine
+
+Нужен полноценный layout engine:
+
+grid layout
+active speaker layout
+lecture mode
+custom layouts
+drag-and-drop positioning
+dynamic resize
+picture-in-picture
+branding/logo overlays
+background images
+Web admin panel
+
+Создать полноценную web admin панель:
+
+управление конференциями
+создание комнат
+управление пользователями
+настройка layout’ов
+мониторинг участников
+QoS статистика
+bitrate/fps/charts
+логирование
+запись конференций
+system health dashboard
+RBAC
+dark/light mode
+DevOps
+
+Подготовить:
+
+docker-compose.yml
+production Dockerfiles
+multi-stage builds
+healthchecks
+observability stack
+Prometheus
+Grafana
+Loki
+structured logging
+CI/CD pipeline example
+environment configs
+secrets handling
+TURN/STUN integration
+Сеть и медиа
+
+Обязательно:
+
+coturn integration
+ICE/STUN/TURN
+SRTP
+DTLS
+TLS everywhere
+IPv6 support
+UDP/TCP fallback
+QoS considerations
+Безопасность
+secure by default
+rate limiting
+CSRF protection
+XSS protection
+SIP auth
+encrypted signaling
+secure media transport
+audit logs
+Что нужно от тебя
+Предложи оптимальную архитектуру.
+Объясни выбор технологий.
+Опиши все сервисы и их взаимодействие.
+Сгенерируй структуру репозитория.
+Сгенерируй docker-compose.
+Сгенерируй базовую реализацию сервисов.
+Сгенерируй backend API.
+Сгенерируй frontend admin panel.
+Опиши media pipeline.
+Покажи flow WebRTC/SIP/H323.
+Добавь monitoring stack.
+Подготовь production deployment рекомендации.
+Укажи потенциальные bottleneck’и.
+Предложи стратегию масштабирования.
+Добавь roadmap дальнейшего развития.
+Важные ограничения
+Не предлагать Janus/Greenlight/старые Asterisk-only решения как основу MCU.
+Если используешь FreeSWITCH/Kamailio/OpenSIPS — только как gateway/signaling layer, а не ядро MCU.
+Основная логика MCU должна быть современной и кастомной.
+Код должен быть production-grade.
+Использовать clean architecture.
+Максимально избегать legacy зависимостей.
+Все примеры должны быть актуальны на 2026 год.
+Формат ответа
+
+Ответ должен быть структурирован:
+
+Architecture
+Components
+Media pipeline
+Signaling
+Docker
+Backend
+Frontend
+Deployment
+Scaling
+Security
+Monitoring
+Roadmap
+
+Везде добавляй примеры кода, конфигов и структуры директорий.

@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package vks4.mcu.v1;
+
+option go_package = "github.com/vks4/vks4/api/gen/go/mcu/v1;mcuv1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Mcu — контракт media-worker.
+// Используется control-plane / signaling / media-router.
+service Mcu {
+  rpc CreateRoom (CreateRoomRequest) returns (Room);
+  rpc DestroyRoom (RoomId) returns (google.protobuf.Empty);
+  rpc AddPeer (AddPeerRequest) returns (AddPeerResponse);
+  rpc RemovePeer (PeerRef) returns (google.protobuf.Empty);
+  rpc UpdateLayout (UpdateLayoutRequest) returns (google.protobuf.Empty);
+  rpc StartRecording (RoomId) returns (Recording);
+  rpc StopRecording (RoomId) returns (Recording);
+  rpc StreamStats (RoomId) returns (stream RoomStats);
+  rpc Health (google.protobuf.Empty) returns (HealthStatus);
+}
+
+message RoomId { string id = 1; }
+
+message PeerRef {
+  string room_id = 1;
+  string peer_id = 2;
+}
+
+message CreateRoomRequest {
+  string id = 1;                       // uuid из control-plane
+  string name = 2;
+  RoomMode mode = 3;
+  int32   max_participants = 4;
+  Layout  default_layout = 5;
+  bool    recording = 6;
+}
+
+enum RoomMode {
+  ROOM_MODE_UNSPECIFIED = 0;
+  ROOM_MODE_MEETING = 1;
+  ROOM_MODE_LECTURE = 2;
+  ROOM_MODE_WEBINAR = 3;
+}
+
+message Room {
+  string id = 1;
+  string worker_id = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message AddPeerRequest {
+  string room_id = 1;
+  string peer_id = 2;
+  string display_name = 3;
+  ParticipantRole role = 4;
+  Transport transport = 5;
+  string sdp_offer = 6;
+}
+
+enum ParticipantRole {
+  PARTICIPANT_ROLE_UNSPECIFIED = 0;
+  PARTICIPANT_ROLE_HOST = 1;
+  PARTICIPANT_ROLE_PRESENTER = 2;
+  PARTICIPANT_ROLE_ATTENDEE = 3;
+}
+
+enum Transport {
+  TRANSPORT_UNSPECIFIED = 0;
+  TRANSPORT_WEBRTC = 1;
+  TRANSPORT_SIP = 2;
+  TRANSPORT_H323 = 3;
+}
+
+message AddPeerResponse {
+  string sdp_answer = 1;
+  repeated string ice_candidates = 2;
+}
+
+message Layout {
+  LayoutMode mode = 1;
+  int32 width = 2;
+  int32 height = 3;
+  string background_color = 4;
+  string background_url = 5;
+  string logo_url = 6;
+  repeated LayoutCell cells = 7;
+}
+
+enum LayoutMode {
+  LAYOUT_MODE_UNSPECIFIED = 0;
+  LAYOUT_MODE_GRID = 1;
+  LAYOUT_MODE_ACTIVE_SPEAKER = 2;
+  LAYOUT_MODE_LECTURE = 3;
+  LAYOUT_MODE_PIP = 4;
+  LAYOUT_MODE_CUSTOM = 5;
+}
+
+message LayoutCell {
+  string id = 1;
+  float x = 2; float y = 3; float w = 4; float h = 5;
+  int32 z_index = 6;
+}
+
+message UpdateLayoutRequest {
+  string room_id = 1;
+  Layout layout = 2;
+}
+
+message Recording {
+  string id = 1;
+  string room_id = 2;
+  RecordingStatus status = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  int64 size_bytes = 6;
+  string url = 7;
+}
+
+enum RecordingStatus {
+  RECORDING_STATUS_UNSPECIFIED = 0;
+  RECORDING_STATUS_RUNNING = 1;
+  RECORDING_STATUS_FINISHED = 2;
+  RECORDING_STATUS_FAILED = 3;
+}
+
+message RoomStats {
+  string room_id = 1;
+  int32 participants = 2;
+  int32 video_bitrate_bps = 3;
+  int32 audio_bitrate_bps = 4;
+  double cpu_load = 5;
+  string active_speaker = 6;
+  google.protobuf.Timestamp timestamp = 7;
+  repeated PeerStats peers = 8;
+}
+
+message PeerStats {
+  string peer_id = 1;
+  int32 rtt_ms = 2;
+  float jitter_ms = 3;
+  float loss = 4;
+  int32 bitrate_bps = 5;
+  float audio_rms_dbfs = 6;
+}
+
+message HealthStatus {
+  string worker_id = 1;
+  int32 active_rooms = 2;
+  int32 active_peers = 3;
+  double cpu = 4;
+  double memory = 5;
+  string version = 6;
+}

@@ -1,0 +1,33 @@
+{
+  "title": "vks4 — Rooms QoS",
+  "uid": "vks4-rooms-qos",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active rooms",
+      "targets": [{ "expr": "count(mcu_room_participants)" }],
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Active participants",
+      "targets": [{ "expr": "sum(mcu_room_participants)" }],
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Egress video bitrate (bps) per room",
+      "targets": [{ "expr": "sum by (room) (mcu_video_bitrate_bps{direction=\"egress\"})" }],
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Packet loss per room",
+      "targets": [{ "expr": "rate(mcu_packets_lost_total[1m])" }],
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 }
+    }
+  ]
+}

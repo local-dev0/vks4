@@ -1,0 +1,232 @@
+name: vks4
+
+networks:
+  edge:
+  app:
+  media:
+
+volumes:
+  postgres-data:
+  minio-data:
+  grafana-data:
+  loki-data:
+  caddy-data:
+  caddy-config:
+  recordings:
+
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge, app]
+    depends_on:
+      - admin-web
+      - control-plane
+      - signaling
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [app]
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./deploy/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+  freeswitch:
+    image: signalwire/freeswitch:1.10
+    restart: unless-stopped
+    profiles: ["sip"]
+    volumes:
+      - ./deploy/freeswitch/conf:/etc/freeswitch:ro
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5061:5061/tcp"
+      - "16384-16484:16384-16484/udp"
+    networks: [media, app]
+
+  control-plane:
+    build:
+      context: ./services/control-plane
+      dockerfile: Dockerfile
+    image: vks4/control-plane:dev
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - recordings:/data/recordings
+    networks: [app]
+    healthcheck:
+      test: ["CMD", "/app/bin/control-plane", "health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  signaling:
+    build:
+      context: ./services/signaling
+      dockerfile: Dockerfile
+    image: vks4/signaling:dev
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      control-plane:
+        condition: service_started
+    volumes:
+      - ./secrets:/run/secrets:ro
+    networks: [app]
+
+  media-router:
+    build:
+      context: ./services/media-router
+      dockerfile: Dockerfile
+    image: vks4/media-router:dev
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [app]
+
+  media-worker:
+    build:
+      context: ./services/media-worker
+      dockerfile: Dockerfile
+    image: vks4/media-worker:dev
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - recordings:/data/recordings
+    # Публикуем UDP-диапазон для Pion (входящий/исходящий RTP).
+    # MEDIA_WORKER_UDP_MIN..MAX в .env должны совпадать с этим диапазоном.
+    ports:
+      - "50000-50050:50000-50050/udp"
+    networks: [app, media]
+
+  sip-gateway:
+    build:
+      context: ./services/sip-gateway
+      dockerfile: Dockerfile
+    image: vks4/sip-gateway:dev
+    restart: unless-stopped
+    profiles: ["sip"]
+    env_file: .env
+    depends_on:
+      - freeswitch
+    networks: [app, media]
+
+  admin-web:
+    build:
+      context: ./web/admin
+      dockerfile: Dockerfile
+    image: vks4/admin-web:dev
+    restart: unless-stopped
+    networks: [edge, app]
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks: [app]
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [app, edge]
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks: [app]
+
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [app]
+
+  load-tester:
+    build:
+      context: ./tools/load-tester
+      dockerfile: Dockerfile
+    image: vks4/load-tester:dev
+    profiles: ["test"]
+    env_file: .env
+    networks: [app]
