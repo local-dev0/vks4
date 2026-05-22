@@ -47,6 +47,9 @@ type Pipeline interface {
 	// UpdateLayout перестраивает позиции compositor.sink_N.
 	UpdateLayout(cells []layout.Cell) error
 
+	// SetPeerName — обновляет текст подписи (textoverlay) на peer's video.
+	SetPeerName(peerID, name string) error
+
 	// Recording on/off; возвращает путь к файлу при остановке.
 	StartRecording(filename string) error
 	StopRecording() (path string, size int64, err error)

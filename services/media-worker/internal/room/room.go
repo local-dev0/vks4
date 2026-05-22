@@ -64,6 +64,9 @@ type Room struct {
 	// принимается как peerID напрямую.
 	customCells []CustomCell
 
+	// displayNames — мапа peerID → имя для подписи в MCU output (textoverlay).
+	displayNames map[string]string
+
 	bvSent  atomic.Uint64
 	bvEmpty atomic.Uint64
 	bvErr   atomic.Uint64
@@ -100,7 +103,7 @@ func New(opts Options) *Room {
 		ID:         opts.ID,
 		peers:      map[string]*peer.Peer{},
 		pipeline:   opts.Pipeline,
-		det:        asd.New(-45, 300*time.Millisecond),
+		det:        asd.New(-45, 800*time.Millisecond),
 		mode:       layout.ModeGrid,
 		log:        opts.Log,
 		ice:        opts.ICE,
@@ -123,7 +126,7 @@ func New(opts Options) *Room {
 	return r
 }
 
-func (r *Room) AddPeer(ctx context.Context, peerID, sdpOffer string) (string, error) {
+func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string) (string, error) {
 	r.mu.Lock()
 	if _, ok := r.peers[peerID]; ok {
 		r.mu.Unlock()
@@ -168,6 +171,10 @@ func (r *Room) AddPeer(ctx context.Context, peerID, sdpOffer string) (string, er
 		r.audioIn[peerID] = audioIn
 	}
 	r.joinOrder = append(r.joinOrder, peerID)
+	if r.displayNames == nil {
+		r.displayNames = map[string]string{}
+	}
+	r.displayNames[peerID] = displayName
 	// Assign первый свободный slot для нового peer'а.
 	for i := range r.slots {
 		if r.slots[i] == "" {
@@ -177,6 +184,9 @@ func (r *Room) AddPeer(ctx context.Context, peerID, sdpOffer string) (string, er
 	}
 	r.mu.Unlock()
 	if !r.sfu {
+		if displayName != "" {
+			_ = r.pipeline.SetPeerName(peerID, displayName)
+		}
 		r.applyLayout()
 	}
 	return answer, nil

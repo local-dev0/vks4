@@ -118,10 +118,13 @@ func newGstPipeline(spec Spec) (*gstPipeline, error) {
 		spec.FPS = 30
 	}
 	if spec.VideoBitrate == 0 {
-		spec.VideoBitrate = 800_000
+		// 500 kbps достаточно для MCU 1280×720 mix при 30fps с VP8.
+		// Понижено с 800: серверу не нужна студийная битрейт-картинка, клиент всё равно
+		// смотрит уменьшенно. Снижает downlink и нагрузку на encoder.
+		spec.VideoBitrate = 500_000
 	}
 	if spec.AudioBitrate == 0 {
-		spec.AudioBitrate = 64_000
+		spec.AudioBitrate = 48_000
 	}
 
 	desc := buildPipelineDesc(spec)
@@ -205,11 +208,6 @@ func newGstPipeline(spec Spec) (*gstPipeline, error) {
 			fmt.Fprintf(os.Stderr, "gst EOS (src=%s)\n", msg.Source())
 		case gst.MessageElement:
 			g.handleLevelMessage(msg)
-		default:
-			if strings.HasPrefix(msg.Source(), "level-") {
-				fmt.Fprintf(os.Stderr, "level msg type=%d (%s) src=%s\n",
-					msg.Type(), msg.TypeName(), msg.Source())
-			}
 		}
 		return true // keep watching
 	})
@@ -270,9 +268,10 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	// КЛЮЧЕВОЕ: явно фиксируем format=I420 — иначе compositor.sink_%u не negotiate
 	// и весь bin падает в streaming stopped, reason not-negotiated (-4).
 	vDesc := fmt.Sprintf(
-		// videorate перед compositor даёт стабильный 30fps на peer-pad (compositor ожидает
-		// regular cadence для force-live aggregation). avdec_vp8 может выдавать frames неравномерно,
-		// без videorate compositor считает pad inactive и рисует только фон.
+		// videorate перед compositor — стабильный 30fps на peer-pad (compositor force-live
+		// aggregation требует regular cadence).
+		// Прим.: textoverlay внутри bin'а ломал caps negotiation (peer-pad переставал отдавать
+		// фреймы в compositor) — перенесём подписи на client-side overlay позже.
 		`appsrc name=vsrc-%[1]s is-live=true format=time do-timestamp=true caps="application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96" `+
 			`! rtpvp8depay `+
 			`! queue max-size-buffers=32 leaky=downstream `+
@@ -318,8 +317,7 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	e4 := vmixSink.SetProperty("height", int(scaledH))
 	e5 := vmixSink.SetProperty("zorder", uint(10))
 	e6 := vmixSink.SetProperty("alpha", float64(1.0))
-	fmt.Fprintf(os.Stderr, "default pad props peer=%s w=%d h=%d errs=%v/%v/%v/%v/%v/%v\n",
-		peerID[:8], scaledW, scaledH, e1, e2, e3, e4, e5, e6)
+	_, _, _, _, _, _ = e1, e2, e3, e4, e5, e6
 
 	// --- audio branch ---
 	// Явный format=S16LE на выходе — нужен чтобы VAD-appsink ниже декодировал samples
@@ -422,7 +420,6 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 			return p.onVADSample(peerID, sink)
 		},
 	})
-	fmt.Fprintf(os.Stderr, "VAD tee+appsink added for peer=%s\n", peerID[:8])
 
 	// appsrc-ы внутри bin'ов
 	vsrcEl, err := vbin.GetElementByName("vsrc-" + peerID)
@@ -465,8 +462,7 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	// Диагностика: какое состояние у bin'ов через секунду.
 	go func(pid string, vb, ab *gst.Bin) {
 		time.Sleep(1500 * time.Millisecond)
-		fmt.Fprintf(os.Stderr, "bin states peer=%s vbin=%s abin=%s pipeline=%s\n",
-			pid, vb.GetCurrentState(), ab.GetCurrentState(), p.pipeline.GetCurrentState())
+		_, _, _, _ = pid, vb, ab, p.pipeline
 	}(peerID[:8], vbin, abin)
 
 	go p.pumpAppsrc(vsrc, branch.videoCh, branch.closeCh, "video-"+peerID[:8])
@@ -592,10 +588,7 @@ func (p *gstPipeline) pumpAppsrc(src *app.Source, in chan []byte, done chan stru
 				fmt.Fprintf(os.Stderr, "pump %s PushBuffer ret=%v, pushed=%d — bailing\n", kind, ret, pushed.Load())
 				return
 			}
-			n := pushed.Add(1)
-			if n == 1 || n%500 == 0 {
-				fmt.Fprintf(os.Stderr, "pump %s pushed=%d (last len=%d)\n", kind, n, len(pkt))
-			}
+			pushed.Add(1)
 		}
 	}
 }
@@ -647,18 +640,12 @@ func (p *gstPipeline) handleLevelMessage(msg *gst.Message) {
 var pulledV, pulledA atomic.Uint64
 
 func (p *gstPipeline) onVideoSample(sink *app.Sink) gst.FlowReturn {
-	n := pulledV.Add(1)
-	if n == 1 || n%500 == 0 {
-		fmt.Fprintf(os.Stderr, "appsink video new-sample n=%d\n", n)
-	}
+	pulledV.Add(1)
 	return p.pullSample(sink, p.videoOut)
 }
 
 func (p *gstPipeline) onAudioSample(sink *app.Sink) gst.FlowReturn {
-	n := pulledA.Add(1)
-	if n == 1 || n%500 == 0 {
-		fmt.Fprintf(os.Stderr, "appsink audio new-sample n=%d\n", n)
-	}
+	pulledA.Add(1)
 	return p.pullSample(sink, p.audioOut)
 }
 
@@ -687,10 +674,18 @@ func (p *gstPipeline) pullSample(sink *app.Sink, out chan Sample) gst.FlowReturn
 	return gst.FlowOK
 }
 
+// SetPeerName — пока no-op, textoverlay убран из pipeline.
+// Имена peer-ов будут рисоваться client-side overlay'ем поверх MCU video.
+func (p *gstPipeline) SetPeerName(peerID, name string) error {
+	_ = peerID
+	_ = name
+	return nil
+}
+
 func (p *gstPipeline) UpdateLayout(cells []layout.Cell) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "UpdateLayout called with %d cells, %d peers in pipeline\n", len(cells), len(p.peers))
+	_ = cells // UpdateLayout вызывается часто (по ASD); подробный лог раньше шёл в loki
 
 	// Шаг 1: прячем ВСЕ placeholder-pad'ы за пределы canvas.
 	for i := 0; i < 20; i++ {
@@ -728,8 +723,11 @@ func (p *gstPipeline) UpdateLayout(cells []layout.Cell) error {
 		e3 := b.vMixPad.SetProperty("width", int(c.W))
 		e4 := b.vMixPad.SetProperty("height", int(c.H))
 		e5 := b.vMixPad.SetProperty("zorder", uint(10+c.Z))
-		fmt.Fprintf(os.Stderr, "  cell peer=%s slot=%d: x=%v y=%v w=%v h=%v z=%v errs=%v/%v/%v/%v/%v\n",
-			c.PeerID[:8], c.SlotIndex, c.X, c.Y, c.W, c.H, c.Z, e1, e2, e3, e4, e5)
+		_ = e1
+		_ = e2
+		_ = e3
+		_ = e4
+		_ = e5
 	}
 	return nil
 }
@@ -823,11 +821,15 @@ func buildPipelineDesc(spec Spec) string {
 
 func buildVideoEnc(spec Spec) string {
 	if spec.VideoCodec == "h264" {
+		// vbv-buf-capacity + bitrate-tolerance держат outgoing близко к target.
 		return "videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=" + itoa(spec.VideoBitrate/1000) +
-			" key-int-max=" + itoa(spec.FPS*2) + " ! rtph264pay pt=102 config-interval=-1 ssrc=1"
+			" key-int-max=" + itoa(spec.FPS*2) + " vbv-buf-capacity=600 ! rtph264pay pt=102 config-interval=-1 ssrc=1"
 	}
+	// min-quantizer/max-quantizer ужесточают bitrate cap для VP8 (без них target-bitrate
+	// это soft hint и encoder может выдавать 2-3× выше при complex scenes).
 	return "videoconvert ! vp8enc deadline=1 cpu-used=8 target-bitrate=" + itoa(spec.VideoBitrate) +
-		" keyframe-max-dist=" + itoa(spec.FPS*2) + " ! rtpvp8pay pt=96 ssrc=1"
+		" min-quantizer=15 max-quantizer=50 buffer-size=600 buffer-initial-size=400 buffer-optimal-size=500 " +
+		"keyframe-max-dist=" + itoa(spec.FPS*2) + " end-usage=cbr ! rtpvp8pay pt=96 ssrc=1"
 }
 
 func buildAudioEnc(spec Spec) string {

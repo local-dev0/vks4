@@ -196,11 +196,10 @@ func (p *Peer) onTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 				return
 			}
 			pkts++
-			if pkts == 1 || pkts%500 == 0 {
-				p.log.Info("track read",
+			if pkts == 1 {
+				p.log.Info("track read first packet",
 					zap.String("peer", p.ID),
 					zap.Bool("video", isVideo),
-					zap.Uint64("pkts", pkts),
 					zap.Int("n", n))
 			}
 			pkt := make([]byte, n)

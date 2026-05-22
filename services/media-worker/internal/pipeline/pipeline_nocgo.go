@@ -41,5 +41,6 @@ func (p *noopPipeline) VideoOut() <-chan Sample                  { return p.vide
 func (p *noopPipeline) AudioOut() <-chan Sample                  { return p.audio }
 func (p *noopPipeline) ASDLevel() <-chan ASDLevel                { return p.asd }
 func (p *noopPipeline) UpdateLayout(cells []layout.Cell) error   { return nil }
+func (p *noopPipeline) SetPeerName(peerID, name string) error    { return nil }
 func (p *noopPipeline) StartRecording(filename string) error     { return nil }
 func (p *noopPipeline) StopRecording() (string, int64, error)    { return "", 0, nil }

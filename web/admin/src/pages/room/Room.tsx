@@ -63,7 +63,20 @@ export function Room() {
 
     let local: MediaStream;
     try {
-      local = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      // Ограничиваем разрешение/fps для экономии bandwidth (камеры по умолчанию шлют 1080p@30
+      // что даёт ~2-3 Mbps uplink). 640×480@24 хватает MCU-микшеру и режет трафик до ~400-700 kbps.
+      local = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 24, max: 30 },
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
     } catch (e) {
       setError(`getUserMedia: ${(e as Error).message}`);
       setState("failed");
@@ -103,6 +116,22 @@ export function Room() {
     };
 
     local.getTracks().forEach((t) => pc.addTrack(t, local));
+
+    // Ограничиваем outgoing video bitrate. По умолчанию Chrome шлёт до 2.5 Mbps,
+    // что слишком жирно для MCU-микса где peer становится крошечной ячейкой.
+    // 500 kbps достаточно для 480p при норм. качестве.
+    const videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
+    if (videoSender) {
+      const params = videoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+      params.encodings[0].maxBitrate = 500_000;
+      params.encodings[0].maxFramerate = 24;
+      try {
+        await videoSender.setParameters(params);
+      } catch (e) {
+        console.warn("setParameters video", e);
+      }
+    }
 
     // Сервер заводит 1 sendonly video (MCU output, slot-0) и 20 sendonly audio
     // (по одному на каждый peer-slot для SFU mix-minus). Клиент должен добавить

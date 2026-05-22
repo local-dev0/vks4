@@ -83,7 +83,7 @@ func (a *API) addPeer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	answer, err := rm.AddPeer(r.Context(), in.PeerID, in.SDPOffer)
+	answer, err := rm.AddPeer(r.Context(), in.PeerID, in.DisplayName, in.SDPOffer)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
