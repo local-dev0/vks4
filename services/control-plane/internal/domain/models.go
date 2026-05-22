@@ -99,6 +99,9 @@ type Layout struct {
 	Background LayoutBackground `json:"background,omitempty"`
 	Logo       LayoutLogo       `json:"logo,omitempty"`
 	Cells      []LayoutCell     `json:"cells,omitempty"`
+	// ShowNames=true рисует подпись (displayName) внизу каждой ячейки в MCU output.
+	// По умолчанию true для backward-compat. Toggle в Room Control.
+	ShowNames *bool `json:"showNames,omitempty"`
 }
 
 func (l Layout) MarshalJSONBytes() ([]byte, error) { return json.Marshal(l) }

@@ -41,7 +41,8 @@ export function Room() {
   // Используется для UI-индикаторов и для редактора (peer pinning).
   const [roster, setRoster] = useState<Array<{ slot: number; peerId: string; displayName: string }>>([]);
 
-  const displayName = useMemo(() => user?.email ?? "guest", [user]);
+  // Приоритет: name из учётки → email → "guest".
+  const displayName = useMemo(() => user?.name?.trim() || user?.email || "guest", [user]);
 
   // Получаем текущий layout комнаты при заходе.
   useEffect(() => {

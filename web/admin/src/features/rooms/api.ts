@@ -21,6 +21,7 @@ export interface Layout {
   background?: { color?: string; url?: string };
   logo?: { url?: string; x?: number; y?: number; w?: number; h?: number };
   cells?: Array<{ id: string; x: number; y: number; w: number; h: number; zIndex?: number; vad?: boolean }>;
+  showNames?: boolean;
 }
 
 export interface Participant {

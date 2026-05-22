@@ -66,6 +66,8 @@ type Room struct {
 
 	// displayNames — мапа peerID → имя для подписи в MCU output (textoverlay).
 	displayNames map[string]string
+	// showNames — глобальный toggle: если false, имена не рисуются (overlay = " ").
+	showNames bool
 
 	bvSent  atomic.Uint64
 	bvEmpty atomic.Uint64
@@ -118,6 +120,7 @@ func New(opts Options) *Room {
 		audioIn:    map[string]chan<- []byte{},
 		stopEgress: make(chan struct{}),
 		createdAt:  time.Now(),
+		showNames:  true, // по умолчанию имена включены
 	}
 	if !opts.SFU {
 		go r.egressLoop()
@@ -182,14 +185,39 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 			break
 		}
 	}
+	showNames := r.showNames
 	r.mu.Unlock()
 	if !r.sfu {
-		if displayName != "" {
+		if showNames && displayName != "" {
 			_ = r.pipeline.SetPeerName(peerID, displayName)
+		} else {
+			_ = r.pipeline.SetPeerName(peerID, " ")
 		}
 		r.applyLayout()
 	}
 	return answer, nil
+}
+
+// SetShowNames переключает отображение имён в MCU output.
+// Применяет ко всем уже подключенным peer'ам через pipeline.SetPeerName.
+func (r *Room) SetShowNames(on bool) {
+	r.mu.Lock()
+	r.showNames = on
+	names := make(map[string]string, len(r.displayNames))
+	for k, v := range r.displayNames {
+		names[k] = v
+	}
+	r.mu.Unlock()
+	r.log.Info("SetShowNames", zap.String("room", r.ID), zap.Bool("on", on), zap.Int("peers", len(names)))
+	for peerID, name := range names {
+		text := " "
+		if on && name != "" {
+			text = name
+		}
+		if err := r.pipeline.SetPeerName(peerID, text); err != nil {
+			r.log.Warn("SetPeerName failed", zap.String("peer", peerID), zap.Error(err))
+		}
+	}
 }
 
 // SlotOf возвращает slot index для peer'а (-1 если не назначен).

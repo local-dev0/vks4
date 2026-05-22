@@ -112,10 +112,11 @@ type layoutCell struct {
 }
 
 type layoutReq struct {
-	Mode   string       `json:"mode"`
-	Width  int          `json:"width,omitempty"`
-	Height int          `json:"height,omitempty"`
-	Cells  []layoutCell `json:"cells,omitempty"`
+	Mode      string       `json:"mode"`
+	Width     int          `json:"width,omitempty"`
+	Height    int          `json:"height,omitempty"`
+	Cells     []layoutCell `json:"cells,omitempty"`
+	ShowNames *bool        `json:"showNames,omitempty"`
 }
 
 func (a *API) updateLayout(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +141,16 @@ func (a *API) updateLayout(w http.ResponseWriter, r *http.Request) {
 		rm.SetCustomLayout(cells)
 	} else {
 		rm.SetLayout(mode)
+	}
+	a.Log.Info("updateLayout received",
+		zap.String("room", chi.URLParam(r, "room")),
+		zap.String("mode", in.Mode),
+		zap.Int("cells", len(in.Cells)),
+		zap.Bool("showNames_present", in.ShowNames != nil),
+		zap.Any("showNames", in.ShowNames),
+	)
+	if in.ShowNames != nil {
+		rm.SetShowNames(*in.ShowNames)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

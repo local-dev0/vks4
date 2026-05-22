@@ -57,10 +57,11 @@ type layoutCell struct {
 }
 
 type layoutReq struct {
-	Mode   string       `json:"mode"`
-	Width  int          `json:"width,omitempty"`
-	Height int          `json:"height,omitempty"`
-	Cells  []layoutCell `json:"cells,omitempty"`
+	Mode      string       `json:"mode"`
+	Width     int          `json:"width,omitempty"`
+	Height    int          `json:"height,omitempty"`
+	Cells     []layoutCell `json:"cells,omitempty"`
+	ShowNames *bool        `json:"showNames,omitempty"`
 }
 
 func (c *HTTPClient) UpdateLayout(ctx context.Context, id uuid.UUID, layout domain.Layout) error {
@@ -71,10 +72,11 @@ func (c *HTTPClient) UpdateLayout(ctx context.Context, id uuid.UUID, layout doma
 		})
 	}
 	body, _ := json.Marshal(layoutReq{
-		Mode:   string(layout.Mode),
-		Width:  layout.Width,
-		Height: layout.Height,
-		Cells:  cells,
+		Mode:      string(layout.Mode),
+		Width:     layout.Width,
+		Height:    layout.Height,
+		Cells:     cells,
+		ShowNames: layout.ShowNames,
 	})
 	url := fmt.Sprintf("%s/rooms/%s/layout", c.base, id)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))

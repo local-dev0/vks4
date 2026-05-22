@@ -10,7 +10,7 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { Users, LayoutGrid, Sparkles, X, BookOpen, Mic } from "lucide-react";
+import { Users, LayoutGrid, Sparkles, X, BookOpen, Mic, Eye, EyeOff } from "lucide-react";
 import { RoomsApi, type Layout, type Participant } from "@/features/rooms/api";
 import { LayoutsApi } from "@/features/layouts/api";
 
@@ -104,6 +104,16 @@ export function RoomControl() {
     queryKey: ["layout-templates"],
     queryFn: () => LayoutsApi.list(),
   });
+
+  // Toggle подписей участников в MCU output.
+  const showNames = room.data?.defaultLayout?.showNames !== false;
+  const toggleNames = useMutation({
+    mutationFn: () => {
+      const cur = room.data?.defaultLayout ?? { mode: "custom" };
+      return RoomsApi.layout(id, { ...cur, showNames: !showNames });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["room", id] }),
+  });
   const applyTemplate = useMutation({
     mutationFn: async (tplId: string) => {
       const t = await LayoutsApi.get(tplId);
@@ -166,6 +176,15 @@ export function RoomControl() {
             </div>
           </div>
           <div className="flex gap-2 items-center">
+            <button
+              className={`btn-ghost text-xs ${showNames ? "" : "opacity-60"}`}
+              onClick={() => toggleNames.mutate()}
+              disabled={toggleNames.isPending}
+              title={showNames ? "Подписи: ON — клик чтобы выключить" : "Подписи: OFF — клик чтобы включить"}
+            >
+              {showNames ? <Eye className="size-4 text-emerald-500" /> : <EyeOff className="size-4 text-slate-400" />}
+              {showNames ? "Подписи" : "Без подписей"}
+            </button>
             <Link to="/layouts" className="btn-ghost text-xs">
               <BookOpen className="size-4" /> Templates
             </Link>

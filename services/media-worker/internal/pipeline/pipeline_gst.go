@@ -99,7 +99,8 @@ type peerBranch struct {
 	audioSrc *app.Source
 	vMixPad  *gst.Pad // compositor.sink_N
 	aMixPad  *gst.Pad // audiomixer.sink_N
-	teeBin   *gst.Bin // vad tee + appsink
+	teeBin   *gst.Bin    // vad tee + appsink
+	nameTov  *gst.Element // textoverlay для подписи peer'а (в pipeline root, не в bin)
 	videoCh  chan []byte
 	audioCh  chan []byte
 	closeCh  chan struct{}
@@ -301,10 +302,46 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 		_ = p.pipeline.Remove(vbin.Element)
 		return nil, nil, fmt.Errorf("video bin: no src ghost pad")
 	}
-	if ret := vBinSrc.Link(vmixSink); ret != gst.PadLinkOK {
+	// Вставляем textoverlay между peer's video bin и compositor (вне bin'а, в pipeline root).
+	// Текст задаётся позже через SetPeerName. Внутри bin textoverlay ломал caps negotiation,
+	// здесь он работает как обычный element pipeline.
+	nameTov, err := gst.NewElementWithName("textoverlay", "tov-"+peerID)
+	if err != nil || nameTov == nil {
 		p.vmix.ReleaseRequestPad(vmixSink)
 		_ = p.pipeline.Remove(vbin.Element)
-		return nil, nil, fmt.Errorf("link video bin → vmix: %v", ret)
+		return nil, nil, fmt.Errorf("create textoverlay: %w", err)
+	}
+	_ = nameTov.SetProperty("text", " ")
+	_ = nameTov.SetProperty("valignment", "bottom")
+	_ = nameTov.SetProperty("halignment", "center")
+	_ = nameTov.SetProperty("font-desc", "Sans Bold 14")
+	_ = nameTov.SetProperty("shaded-background", true)
+	_ = nameTov.SetProperty("shading-value", uint(160))
+	_ = nameTov.SetProperty("ypad", int(6))
+	if err := p.pipeline.Add(nameTov); err != nil {
+		p.vmix.ReleaseRequestPad(vmixSink)
+		_ = p.pipeline.Remove(vbin.Element)
+		return nil, nil, fmt.Errorf("add textoverlay: %w", err)
+	}
+	tovSink := nameTov.GetStaticPad("video_sink")
+	tovSrc := nameTov.GetStaticPad("src")
+	if tovSink == nil || tovSrc == nil {
+		_ = p.pipeline.Remove(nameTov)
+		p.vmix.ReleaseRequestPad(vmixSink)
+		_ = p.pipeline.Remove(vbin.Element)
+		return nil, nil, fmt.Errorf("textoverlay pads missing")
+	}
+	if ret := vBinSrc.Link(tovSink); ret != gst.PadLinkOK {
+		_ = p.pipeline.Remove(nameTov)
+		p.vmix.ReleaseRequestPad(vmixSink)
+		_ = p.pipeline.Remove(vbin.Element)
+		return nil, nil, fmt.Errorf("link vbin → textoverlay: %v", ret)
+	}
+	if ret := tovSrc.Link(vmixSink); ret != gst.PadLinkOK {
+		_ = p.pipeline.Remove(nameTov)
+		p.vmix.ReleaseRequestPad(vmixSink)
+		_ = p.pipeline.Remove(vbin.Element)
+		return nil, nil, fmt.Errorf("link textoverlay → vmix: %v", ret)
 	}
 	// Дефолтные размеры на compositor.sink_N сразу — чтобы peer был виден
 	// до того, как room вызовет applyLayout. Иначе compositor может зарендерить
@@ -442,6 +479,7 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 		vMixPad:  vmixSink,
 		aMixPad:  amixSink,
 		teeBin:   teeBin,
+		nameTov:  nameTov,
 		videoCh:  make(chan []byte, 256),
 		audioCh:  make(chan []byte, 256),
 		closeCh:  make(chan struct{}),
@@ -455,6 +493,9 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	}
 	if ok := teeBin.SyncStateWithParent(); !ok {
 		fmt.Fprintln(os.Stderr, "sync vad-tee state failed")
+	}
+	if ok := nameTov.SyncStateWithParent(); !ok {
+		fmt.Fprintln(os.Stderr, "sync textoverlay state failed")
 	}
 
 	// level вынесен на pipeline уровень — element messages теперь приходят прямо в pipeline
@@ -518,11 +559,21 @@ func (p *gstPipeline) disposePeer(b *peerBranch) {
 		_ = b.teeBin.SetState(gst.StateNull)
 		_ = p.pipeline.Remove(b.teeBin.Element)
 	}
+	if b.nameTov != nil {
+		_ = b.nameTov.SetState(gst.StateNull)
+		_ = p.pipeline.Remove(b.nameTov)
+	}
 }
+
+// vadCallCount для диагностики: должен инкрементироваться при разговоре.
+var vadCallCount atomic.Uint64
 
 // onVADSample вызывается на каждый decoded audio buffer для peer'а.
 // Считаем RMS (S16LE → float64 → log10) и пушим в asdCh.
 func (p *gstPipeline) onVADSample(peerID string, sink *app.Sink) gst.FlowReturn {
+	if n := vadCallCount.Add(1); n == 1 || n%200 == 0 {
+		fmt.Fprintf(os.Stderr, "VAD onSample n=%d peer=%s\n", n, peerID[:8])
+	}
 	sample := sink.PullSample()
 	if sample == nil {
 		return gst.FlowOK
@@ -674,12 +725,18 @@ func (p *gstPipeline) pullSample(sink *app.Sink, out chan Sample) gst.FlowReturn
 	return gst.FlowOK
 }
 
-// SetPeerName — пока no-op, textoverlay убран из pipeline.
-// Имена peer-ов будут рисоваться client-side overlay'ем поверх MCU video.
+// SetPeerName устанавливает текст подписи peer'а через textoverlay element.
 func (p *gstPipeline) SetPeerName(peerID, name string) error {
-	_ = peerID
-	_ = name
-	return nil
+	p.mu.Lock()
+	b, ok := p.peers[peerID]
+	p.mu.Unlock()
+	if !ok || b == nil || b.nameTov == nil {
+		return fmt.Errorf("peer %s textoverlay not found", peerID[:8])
+	}
+	if name == "" {
+		name = " "
+	}
+	return b.nameTov.SetProperty("text", name)
 }
 
 func (p *gstPipeline) UpdateLayout(cells []layout.Cell) error {

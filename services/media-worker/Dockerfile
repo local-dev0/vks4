@@ -39,7 +39,12 @@ RUN printf 'deb http://mirror.yandex.ru/debian bookworm main\ndeb http://mirror.
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/media-worker /app/bin/media-worker
-RUN useradd -r -u 10001 worker && mkdir -p /data/recordings && chown -R worker:worker /data/recordings
+RUN useradd -r -u 10001 -m -d /home/worker worker \
+    && mkdir -p /data/recordings /home/worker/.cache/fontconfig \
+    && chown -R worker:worker /data/recordings /home/worker
+# HOME и XDG_CACHE_HOME нужны pango/fontconfig для cache'а; textoverlay без них падает с
+# "Fontconfig error: No writable cache directories".
+ENV HOME=/home/worker XDG_CACHE_HOME=/home/worker/.cache
 USER worker
 EXPOSE 9091 9100
 ENTRYPOINT ["/app/bin/media-worker"]
