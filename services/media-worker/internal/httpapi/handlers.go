@@ -112,11 +112,14 @@ type layoutCell struct {
 }
 
 type layoutReq struct {
-	Mode      string       `json:"mode"`
-	Width     int          `json:"width,omitempty"`
-	Height    int          `json:"height,omitempty"`
-	Cells     []layoutCell `json:"cells,omitempty"`
-	ShowNames *bool        `json:"showNames,omitempty"`
+	Mode          string       `json:"mode"`
+	Width         int          `json:"width,omitempty"`
+	Height        int          `json:"height,omitempty"`
+	Cells         []layoutCell `json:"cells,omitempty"`
+	ShowNames     *bool        `json:"showNames,omitempty"`
+	NameBgAlpha   *float64     `json:"nameBgAlpha,omitempty"`
+	NameFontSize  *int         `json:"nameFontSize,omitempty"`
+	NameFontColor *string      `json:"nameFontColor,omitempty"`
 }
 
 func (a *API) updateLayout(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +154,9 @@ func (a *API) updateLayout(w http.ResponseWriter, r *http.Request) {
 	)
 	if in.ShowNames != nil {
 		rm.SetShowNames(*in.ShowNames)
+	}
+	if in.NameBgAlpha != nil || in.NameFontSize != nil || in.NameFontColor != nil {
+		rm.SetNameStyle(in.NameBgAlpha, in.NameFontSize, in.NameFontColor)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

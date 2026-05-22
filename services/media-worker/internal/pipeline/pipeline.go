@@ -50,6 +50,9 @@ type Pipeline interface {
 	// SetPeerName — обновляет текст подписи (textoverlay) на peer's video.
 	SetPeerName(peerID, name string) error
 
+	// SetPeerStyle — стиль подписи: bg alpha (0..1), font size (pt), font color (#RRGGBB).
+	SetPeerStyle(peerID string, bgAlpha float64, fontSize int, fontColor string) error
+
 	// Recording on/off; возвращает путь к файлу при остановке.
 	StartRecording(filename string) error
 	StopRecording() (path string, size int64, err error)

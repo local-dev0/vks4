@@ -726,6 +726,7 @@ func (p *gstPipeline) pullSample(sink *app.Sink, out chan Sample) gst.FlowReturn
 }
 
 // SetPeerName устанавливает текст подписи peer'а через textoverlay element.
+// При пустом имени отключаем shaded-background — иначе остаётся серая полоса даже без текста.
 func (p *gstPipeline) SetPeerName(peerID, name string) error {
 	p.mu.Lock()
 	b, ok := p.peers[peerID]
@@ -733,10 +734,52 @@ func (p *gstPipeline) SetPeerName(peerID, name string) error {
 	if !ok || b == nil || b.nameTov == nil {
 		return fmt.Errorf("peer %s textoverlay not found", peerID[:8])
 	}
-	if name == "" {
-		name = " "
+	if name == "" || name == " " {
+		_ = b.nameTov.SetProperty("text", "")
+		return b.nameTov.SetProperty("shaded-background", false)
 	}
+	_ = b.nameTov.SetProperty("shaded-background", true)
 	return b.nameTov.SetProperty("text", name)
+}
+
+// SetPeerStyle обновляет стиль подписи (цвет фона, шрифт, цвет текста).
+//   - bgAlpha 0..1 → shading-value 0..255 (затемнение полупрозрачной подложкой).
+//   - fontSize в pt (по умолчанию 14).
+//   - fontColor hex "#RRGGBB" → внутренний ARGB uint.
+func (p *gstPipeline) SetPeerStyle(peerID string, bgAlpha float64, fontSize int, fontColor string) error {
+	p.mu.Lock()
+	b, ok := p.peers[peerID]
+	p.mu.Unlock()
+	if !ok || b == nil || b.nameTov == nil {
+		return nil
+	}
+	if bgAlpha < 0 {
+		bgAlpha = 0
+	}
+	if bgAlpha > 1 {
+		bgAlpha = 1
+	}
+	if fontSize < 8 {
+		fontSize = 14
+	}
+	_ = b.nameTov.SetProperty("shading-value", uint(bgAlpha*255))
+	_ = b.nameTov.SetProperty("font-desc", fmt.Sprintf("Sans Bold %d", fontSize))
+	if c, ok := parseHexARGB(fontColor); ok {
+		_ = b.nameTov.SetProperty("color", c)
+	}
+	return nil
+}
+
+// parseHexARGB парсит "#RRGGBB" в uint ARGB (alpha=0xFF). Возвращает false при ошибке.
+func parseHexARGB(s string) (uint, bool) {
+	if len(s) != 7 || s[0] != '#' {
+		return 0, false
+	}
+	var v uint64
+	if _, err := fmt.Sscanf(s[1:], "%06x", &v); err != nil {
+		return 0, false
+	}
+	return uint(0xFF000000) | uint(v), true
 }
 
 func (p *gstPipeline) UpdateLayout(cells []layout.Cell) error {

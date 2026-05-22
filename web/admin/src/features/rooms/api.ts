@@ -22,6 +22,9 @@ export interface Layout {
   logo?: { url?: string; x?: number; y?: number; w?: number; h?: number };
   cells?: Array<{ id: string; x: number; y: number; w: number; h: number; zIndex?: number; vad?: boolean }>;
   showNames?: boolean;
+  nameBgAlpha?: number;     // 0..1
+  nameFontSize?: number;    // pt
+  nameFontColor?: string;   // "#RRGGBB"
 }
 
 export interface Participant {

@@ -68,6 +68,10 @@ type Room struct {
 	displayNames map[string]string
 	// showNames — глобальный toggle: если false, имена не рисуются (overlay = " ").
 	showNames bool
+	// Стиль подписи peer-ов в MCU output (применяется ко всем).
+	nameBgAlpha   float64 // 0..1
+	nameFontSize  int     // pt
+	nameFontColor string  // "#RRGGBB"
 
 	bvSent  atomic.Uint64
 	bvEmpty atomic.Uint64
@@ -120,7 +124,10 @@ func New(opts Options) *Room {
 		audioIn:    map[string]chan<- []byte{},
 		stopEgress: make(chan struct{}),
 		createdAt:  time.Now(),
-		showNames:  true, // по умолчанию имена включены
+		showNames:     true, // по умолчанию имена включены
+		nameBgAlpha:   0.6,
+		nameFontSize:  14,
+		nameFontColor: "#FFFFFF",
 	}
 	if !opts.SFU {
 		go r.egressLoop()
@@ -186,8 +193,14 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 		}
 	}
 	showNames := r.showNames
+	style := struct {
+		alpha float64
+		size  int
+		color string
+	}{r.nameBgAlpha, r.nameFontSize, r.nameFontColor}
 	r.mu.Unlock()
 	if !r.sfu {
+		_ = r.pipeline.SetPeerStyle(peerID, style.alpha, style.size, style.color)
 		if showNames && displayName != "" {
 			_ = r.pipeline.SetPeerName(peerID, displayName)
 		} else {
@@ -196,6 +209,31 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 		r.applyLayout()
 	}
 	return answer, nil
+}
+
+// SetNameStyle обновляет стиль подписи peer-ов. Все указатели опциональны — nil оставляет
+// текущее значение. Применяет ко всем уже подключенным peer'ам.
+func (r *Room) SetNameStyle(alpha *float64, fontSize *int, fontColor *string) {
+	r.mu.Lock()
+	if alpha != nil {
+		r.nameBgAlpha = *alpha
+	}
+	if fontSize != nil {
+		r.nameFontSize = *fontSize
+	}
+	if fontColor != nil {
+		r.nameFontColor = *fontColor
+	}
+	a, s, c := r.nameBgAlpha, r.nameFontSize, r.nameFontColor
+	peers := make([]string, 0, len(r.displayNames))
+	for k := range r.displayNames {
+		peers = append(peers, k)
+	}
+	r.mu.Unlock()
+	r.log.Info("SetNameStyle", zap.Float64("alpha", a), zap.Int("size", s), zap.String("color", c))
+	for _, peerID := range peers {
+		_ = r.pipeline.SetPeerStyle(peerID, a, s, c)
+	}
 }
 
 // SetShowNames переключает отображение имён в MCU output.
