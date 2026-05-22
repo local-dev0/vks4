@@ -8,10 +8,11 @@
     <param name="sip-ip" value="0.0.0.0"/>
     <param name="rtp-ip" value="0.0.0.0"/>
 
-    <!-- ext-* для SDP: используем local-network detection (auto-nat). В Docker STUN
-         недоступен — берём IP первого внешнего интерфейса. -->
-    <param name="ext-rtp-ip" value="auto"/>
-    <param name="ext-sip-ip" value="auto"/>
+    <!-- ext-* для SDP: публичный IP хоста (см. vars.xml: external_ip из env SOFIA_EXTERNAL_IP).
+         "auto" не подходит — FS в docker детектит свой internal IP (172.x), недостижимый
+         для SIP-терминалов в LAN. Терминал получает этот IP в c-line и шлёт RTP в никуда. -->
+    <param name="ext-rtp-ip" value="$${external_ip}"/>
+    <param name="ext-sip-ip" value="$${external_ip}"/>
 
     <param name="context" value="public"/>
 

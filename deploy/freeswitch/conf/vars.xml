@@ -4,4 +4,10 @@
   <X-PRE-PROCESS cmd="set" data="sipgw_addr=sip-gateway"/>
   <X-PRE-PROCESS cmd="set" data="sipgw_port=5070"/>
   <X-PRE-PROCESS cmd="set" data="esl_password=ClueCon"/>
+
+  <!-- Публичный IP сервера для SDP к SIP-терминалам (Polycom и т.д.).
+       Берётся из env SOFIA_EXTERNAL_IP (= FS_PUBLIC_IP в .env). Если "auto" в external.xml,
+       FS детектит docker-internal IP (172.x.x.x), который недостижим для терминалов в LAN.
+       `printenv` отсутствует в safarov/freeswitch — используем env + sed. -->
+  <X-PRE-PROCESS cmd="exec-set" data="external_ip=env | sed -n 's/^SOFIA_EXTERNAL_IP=//p'"/>
 </include>

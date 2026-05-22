@@ -285,17 +285,34 @@ func buildOverlayMarkup(name, bgHex string, bgAlpha float64, fgHex string) strin
 // и открывает UDP listener для входящих Opus пакетов от sip-gateway.
 // Возвращает peer (с .AudioPort для SDP answer).
 func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
-	// pipeline создаёт audioIn channel (Opus RTP appsrc). videoIn для SIP audio-only не нужен,
-	// но AddPeer возвращает оба — videoIn будет idle.
-	_, audioIn, err := r.pipeline.AddPeer(peerID)
+	// pipeline создаёт audio/video bins (нужны для slot tracking и layout).
+	// Но audio SIP-пира НЕ пушим в pipeline.AudioIn — иначе он попадёт в общий микс,
+	// который мы же ему обратно отдаём в egressLoop → self-echo на Polycom.
+	// Вместо этого аудио SIP-пира уходит SFU-style в forwardAudio.
+	_, _, err := r.pipeline.AddPeer(peerID)
 	if err != nil {
 		return nil, err
 	}
-	sp, err := sipbridge.NewPeer(peerID, audioIn, r.log)
+	// Свой канал — читаем сами и форвардим, минуя pipeline.
+	sipAudioCh := make(chan []byte, 256)
+	sp, err := sipbridge.NewPeer(peerID, sipAudioCh, r.log)
 	if err != nil {
 		_ = r.pipeline.RemovePeer(peerID)
 		return nil, err
 	}
+	go func() {
+		for {
+			select {
+			case <-r.stopEgress:
+				return
+			case pkt, ok := <-sipAudioCh:
+				if !ok {
+					return
+				}
+				r.forwardAudio(peerID, pkt)
+			}
+		}
+	}()
 	r.mu.Lock()
 	if r.sipPeers == nil {
 		r.sipPeers = map[string]*sipbridge.Peer{}
@@ -625,10 +642,11 @@ func (r *Room) egressLoop() {
 			if !ok {
 				return
 			}
-			// Для WebRTC peers MCU audio output игнорируется (mix-minus делается через
-			// SFU-forward в OnAudioRTP). Для SIP-peers'ов pipeline AudioOut — единственный
-			// источник аудио к SIP-терминалу. Они получают общий микс (включая собственный
-			// голос — Polycom имеет AEC, поэтому echo минимален).
+			// SIP-peer'ы получают pipeline mix как input. Их собственное аудио НЕ пушится
+			// в pipeline (см. AddSIPPeer) — иначе на Polycom получался бы self-echo.
+			// SIP-аудио уходит к WebRTC-peer'ам через SFU forwardAudio.
+			// Известное ограничение: мульти-SIP сценарий — два SIP-пира не услышат друг друга
+			// через pipeline-mix. Лечится отдельным per-SIP mix branch (TODO).
 			r.mu.RLock()
 			sipPeers := make([]*sipbridge.Peer, 0, len(r.sipPeers))
 			for _, sp := range r.sipPeers {
