@@ -8,18 +8,65 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/vks4/vks4/services/media-worker/internal/layout"
 	"github.com/vks4/vks4/services/media-worker/internal/room"
 )
 
+// sipParticipant — формат для Redis-hash room:{id}:participants
+// (тот же что использует signaling/presence — control-plane читает оттуда же).
+type sipParticipant struct {
+	PeerID      string    `json:"peerId"`
+	DisplayName string    `json:"displayName"`
+	Role        string    `json:"role"`
+	Transport   string    `json:"transport"`
+	JoinedAt    time.Time `json:"joinedAt"`
+}
+
+func (a *API) presenceAddSIP(ctx context.Context, roomID, peerID, displayName string) {
+	if a.Rdb == nil {
+		return
+	}
+	p := sipParticipant{
+		PeerID: peerID, DisplayName: displayName, Role: "guest",
+		Transport: "sip", JoinedAt: time.Now(),
+	}
+	b, _ := json.Marshal(p)
+	if err := a.Rdb.HSet(ctx, "room:"+roomID+":participants", peerID, b).Err(); err != nil {
+		a.Log.Warn("presence add sip", zap.Error(err))
+	}
+}
+
+func (a *API) presenceRemoveSIP(ctx context.Context, roomID, peerID string) {
+	if a.Rdb == nil {
+		return
+	}
+	_ = a.Rdb.HDel(ctx, "room:"+roomID+":participants", peerID).Err()
+}
+
 type API struct {
 	Rooms        *room.Registry
 	RecordingDir string
 	Log          *zap.Logger
+	Rdb          *redis.Client // для резолва room-alias (name→UUID) в SIP-сценарии
+}
+
+// resolveRoomID — если в Redis есть alias "vks4:room:alias:{name}" → UUID, вернёт UUID.
+// Иначе возвращает входной id как есть (UUID-ы напрямую передаются от signaling без алиаса).
+func (a *API) resolveRoomID(ctx context.Context, id string) string {
+	if a.Rdb == nil || id == "" {
+		return id
+	}
+	key := "vks4:room:alias:" + id
+	if v, err := a.Rdb.Get(ctx, key).Result(); err == nil && v != "" {
+		return v
+	}
+	return id
 }
 
 func (a *API) Router() http.Handler {
@@ -104,8 +151,15 @@ type addSIPPeerResp struct {
 
 // addSIPPeer создаёт SIP-peer (plain-RTP) в комнате — для интеграции FreeSWITCH B2BUA.
 // Возвращает UDP port куда sip-gateway должен слать Opus RTP.
+// roomID может быть либо UUID (от WebRTC потока), либо человекочитаемое имя из SIP
+// (например, "room1" — то что набрал терминал). Алиас name→UUID хранится в Redis
+// и пишется control-plane'ом при создании комнаты.
 func (a *API) addSIPPeer(w http.ResponseWriter, r *http.Request) {
-	roomID := chi.URLParam(r, "room")
+	rawID := chi.URLParam(r, "room")
+	roomID := a.resolveRoomID(r.Context(), rawID)
+	if roomID != rawID {
+		a.Log.Info("sip alias resolved", zap.String("alias", rawID), zap.String("room", roomID))
+	}
 	var in addSIPPeerReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -121,16 +175,22 @@ func (a *API) addSIPPeer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Запись в presence: admin UI читает Redis hash room:{id}:participants через control-plane.
+	a.presenceAddSIP(r.Context(), roomID, in.PeerID, in.DisplayName)
 	writeJSON(w, http.StatusOK, addSIPPeerResp{AudioPort: sp.AudioPort})
 }
 
 func (a *API) removeSIPPeer(w http.ResponseWriter, r *http.Request) {
-	rm := a.Rooms.Get(chi.URLParam(r, "room"))
+	roomID := a.resolveRoomID(r.Context(), chi.URLParam(r, "room"))
+	peerID := chi.URLParam(r, "peer")
+	rm := a.Rooms.Get(roomID)
 	if rm == nil {
+		a.presenceRemoveSIP(r.Context(), roomID, peerID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	rm.RemoveSIPPeer(chi.URLParam(r, "peer"))
+	rm.RemoveSIPPeer(peerID)
+	a.presenceRemoveSIP(r.Context(), roomID, peerID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

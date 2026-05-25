@@ -91,6 +91,9 @@ type Room struct {
 
 	// Egress: pipeline → все peer-ы.
 	stopEgress chan struct{}
+
+	// notifier — рассылка roster-изменений в signaling.
+	notifier Notifier
 }
 
 type Options struct {
@@ -108,6 +111,7 @@ type Options struct {
 	PublicIP string
 	UDPMin   uint16
 	UDPMax   uint16
+	Notifier Notifier
 }
 
 func New(opts Options) *Room {
@@ -135,6 +139,7 @@ func New(opts Options) *Room {
 		nameBgColor:   "#000000",
 		nameFontSize:  14,
 		nameFontColor: "#FFFFFF",
+		notifier:      opts.Notifier,
 	}
 	if !opts.SFU {
 		go r.egressLoop()
@@ -285,15 +290,19 @@ func buildOverlayMarkup(name, bgHex string, bgAlpha float64, fgHex string) strin
 // и открывает UDP listener для входящих Opus пакетов от sip-gateway.
 // Возвращает peer (с .AudioPort для SDP answer).
 func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
-	// pipeline создаёт audio/video bins (нужны для slot tracking и layout).
-	// Но audio SIP-пира НЕ пушим в pipeline.AudioIn — иначе он попадёт в общий микс,
-	// который мы же ему обратно отдаём в egressLoop → self-echo на Polycom.
-	// Вместо этого аудио SIP-пира уходит SFU-style в forwardAudio.
-	_, _, err := r.pipeline.AddPeer(peerID)
+	// pipeline создаёт audio/video bins. Audio bin нужен для VAD/ASD (decode → level per peer).
+	// Но в общий audiomixer SIP-аудио вносить нельзя — иначе оно вернётся к нам через
+	// pipeline.AudioOut и Polycom услышит self-echo. Решение: пушим в pipeline (VAD работает),
+	// но мьютим SIP peer'а на amix-pad'е (вклад в mix output обнуляется).
+	_, audioIn, err := r.pipeline.AddPeer(peerID)
 	if err != nil {
 		return nil, err
 	}
-	// Свой канал — читаем сами и форвардим, минуя pipeline.
+	if err := r.pipeline.SetPeerAudioMute(peerID, true); err != nil {
+		r.log.Warn("sip peer audio mute", zap.String("peer", peerID), zap.Error(err))
+	}
+	// Свой mux-канал: SIP RTP → (a) pipeline.audioIn для VAD, (b) forwardAudio SFU
+	// к WebRTC-пирам (они получают аудио SIP-пира в свой slot-track).
 	sipAudioCh := make(chan []byte, 256)
 	sp, err := sipbridge.NewPeer(peerID, sipAudioCh, r.log)
 	if err != nil {
@@ -310,6 +319,10 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 					return
 				}
 				r.forwardAudio(peerID, pkt)
+				select {
+				case audioIn <- pkt:
+				default:
+				}
 			}
 		}
 	}()
@@ -332,6 +345,7 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 	r.mu.Unlock()
 	r.log.Info("sip peer added", zap.String("peer", peerID), zap.Int("audio-port", sp.AudioPort))
 	r.applyLayout()
+	r.notifyRosterAsync()
 	return sp, nil
 }
 
@@ -353,6 +367,7 @@ func (r *Room) RemoveSIPPeer(peerID string) {
 	}
 	_ = r.pipeline.RemovePeer(peerID)
 	r.applyLayout()
+	r.notifyRosterAsync()
 }
 
 // SetShowNames переключает отображение имён в MCU output.
@@ -418,6 +433,29 @@ func (r *Room) Roster() map[int]string {
 		}
 	}
 	return out
+}
+
+// notifyRosterAsync собирает текущий roster и шлёт notifier'у (signaling) в горутине.
+// Используется когда участники меняются не через signaling (SIP join/leave) —
+// signaling сам не знает о появлении SIP-пира и не разошлёт roster клиентам.
+func (r *Room) notifyRosterAsync() {
+	if r.notifier == nil {
+		return
+	}
+	r.mu.RLock()
+	entries := make([]RosterEntry, 0, len(r.slots))
+	for i, id := range r.slots {
+		if id == "" {
+			continue
+		}
+		entries = append(entries, RosterEntry{
+			Slot:        i,
+			PeerID:      id,
+			DisplayName: r.displayNames[id],
+		})
+	}
+	r.mu.RUnlock()
+	go r.notifier.OnRosterChange(context.Background(), r.ID, entries)
 }
 
 func (r *Room) RemovePeer(peerID string) error {

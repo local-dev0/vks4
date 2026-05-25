@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -68,6 +69,7 @@ func Build(ctx context.Context) (*App, error) {
 	refreshRepo := postgres.NewRefreshTokens(pool)
 	layoutsRepo := postgres.NewLayoutTemplates(pool)
 	presenceRepo := redisrepo.NewPresence(rdb)
+	aliasesRepo := redisrepo.NewAliases(rdb)
 
 	// HTTP client к media-worker для UpdateLayout/DestroyRoom/Kick. CreateRoom — no-op
 	// (media-worker создаёт комнаты лениво при первом AddPeer от signaling).
@@ -77,10 +79,26 @@ func Build(ctx context.Context) (*App, error) {
 
 	authUC := usecase.NewAuth(usersRepo, refreshRepo, auditRepo, jwtIssuer, cfg.BootstrapPass)
 	usersUC := usecase.NewUsers(usersRepo, auditRepo)
-	roomsUC := usecase.NewRooms(roomsRepo, presenceRepo, auditRepo, mediaClient, signalingClient, cfg.PublicURL)
+	roomsUC := usecase.NewRooms(roomsRepo, presenceRepo, auditRepo, mediaClient, signalingClient, aliasesRepo, cfg.PublicURL)
 	recsUC := usecase.NewRecordings(recsRepo, auditRepo, mediaClient)
 	auditUC := usecase.NewAuditor(auditRepo)
 	layoutsUC := usecase.NewLayoutTemplates(layoutsRepo, auditRepo)
+
+	// Backfill room-alias map: для существующих комнат добавляем имя→UUID в Redis,
+	// чтобы SIP-резолв заработал сразу после деплоя без пересоздания комнат.
+	go func() {
+		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer bcancel()
+		rows, _, err := roomsRepo.List(bctx, "", 1000, 0)
+		if err != nil {
+			log.Warn("alias backfill list", zap.Error(err))
+			return
+		}
+		for _, row := range rows {
+			_ = aliasesRepo.Set(bctx, row.Name, row.ID)
+		}
+		log.Info("alias backfill done", zap.Int("rooms", len(rows)))
+	}()
 
 	router := httpapi.Router(httpapi.Deps{
 		Log:     log,

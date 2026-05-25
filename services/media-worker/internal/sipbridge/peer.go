@@ -85,6 +85,13 @@ func (p *Peer) recvLoop() {
 		if pkts == 1 || pkts%500 == 0 {
 			p.log.Info("sip rtp recv", zap.String("peer", p.ID), zap.Uint64("pkts", pkts), zap.Int("size", n))
 		}
+		// Фильтр NAT-binding пакетов от sip-gateway (RTP-header без payload, 12 байт).
+		// Они нужны только чтобы научить наш auto-learn адресу отправителя — auto-learn выше
+		// уже отработал. Дальше эти пакеты ломают WebRTC-пир'ов: ssrc у них рандомный,
+		// если форварднуть в slot-track, jitter buffer и Opus decoder получают мусор.
+		if n <= 12 {
+			continue
+		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		select {

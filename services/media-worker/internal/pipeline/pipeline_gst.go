@@ -764,6 +764,19 @@ func (p *gstPipeline) SetPeerOverlay(peerID, markup string, fontSize int) error 
 	return b.nameTov.SetProperty("text", markup)
 }
 
+// SetPeerAudioMute мьютит aMixPad этого peer'а у audiomixer — peer перестаёт
+// контрибутить в общий mix output, но VAD-ветка (tee → vadsink) продолжает
+// работать (decode/levels считаются как раньше).
+func (p *gstPipeline) SetPeerAudioMute(peerID string, muted bool) error {
+	p.mu.Lock()
+	b, ok := p.peers[peerID]
+	p.mu.Unlock()
+	if !ok || b == nil || b.aMixPad == nil {
+		return fmt.Errorf("peer %s amix pad not found", peerID[:8])
+	}
+	return b.aMixPad.SetProperty("mute", muted)
+}
+
 // SetPeerName / SetPeerStyle оставлены для совместимости с интерфейсом, делегируют room'у
 // (room сам формирует markup и зовёт SetPeerOverlay).
 func (p *gstPipeline) SetPeerName(peerID, name string) error {

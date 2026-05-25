@@ -26,6 +26,7 @@ type Registry struct {
 	publicIP   string
 	udpMin     uint16
 	udpMax     uint16
+	notifier   Notifier
 }
 
 func NewRegistry(p *pipeline.Registry, log *zap.Logger, ice []webrtc.ICEServer, videoCodec string, w, h, fps, vBR, aBR int, sfu bool, publicIP string, udpMin, udpMax uint16) *Registry {
@@ -35,6 +36,11 @@ func NewRegistry(p *pipeline.Registry, log *zap.Logger, ice []webrtc.ICEServer, 
 		sfu: sfu, publicIP: publicIP, udpMin: udpMin, udpMax: udpMax,
 	}
 }
+
+// SetNotifier позволяет передать notifier после конструирования (например,
+// signaling URL из env). Должно быть вызвано до GetOrCreate, иначе уже созданные
+// комнаты получат nil-notifier.
+func (r *Registry) SetNotifier(n Notifier) { r.notifier = n }
 
 func (r *Registry) GetOrCreate(ctx context.Context, roomID string) (*Room, error) {
 	r.mu.RLock()
@@ -59,6 +65,7 @@ func (r *Registry) GetOrCreate(ctx context.Context, roomID string) (*Room, error
 		ID: roomID, Log: r.log, Pipeline: pipe, ICE: r.ice,
 		VideoCodec: r.videoCodec, Width: r.width, Height: r.height,
 		SFU: r.sfu, PublicIP: r.publicIP, UDPMin: r.udpMin, UDPMax: r.udpMax,
+		Notifier: r.notifier,
 	})
 	r.rooms[roomID] = rm
 	return rm, nil

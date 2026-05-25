@@ -21,11 +21,12 @@ type Rooms struct {
 	audit     *postgres.Audit
 	media     mediarpc.Client
 	signaling *signalingrpc.Client
+	aliases   *redisrepo.Aliases
 	pubURL    string
 }
 
-func NewRooms(r *postgres.Rooms, p *redisrepo.Presence, a *postgres.Audit, m mediarpc.Client, sig *signalingrpc.Client, pubURL string) *Rooms {
-	return &Rooms{repo: r, presence: p, audit: a, media: m, signaling: sig, pubURL: pubURL}
+func NewRooms(r *postgres.Rooms, p *redisrepo.Presence, a *postgres.Audit, m mediarpc.Client, sig *signalingrpc.Client, al *redisrepo.Aliases, pubURL string) *Rooms {
+	return &Rooms{repo: r, presence: p, audit: a, media: m, signaling: sig, aliases: al, pubURL: pubURL}
 }
 
 func (r *Rooms) hydrate(room domain.Room) domain.Room {
@@ -95,6 +96,9 @@ func (r *Rooms) Create(ctx context.Context, actor uuid.UUID, in CreateRoomInput)
 		_ = r.audit.Write(ctx, postgres.AuditWrite{ActorID: &actor, Action: "rooms.create.mediafail",
 			Target: row.ID.String(), Payload: map[string]any{"err": err.Error()}})
 	}
+	// Маппинг имя→UUID для SIP-резолва: терминал звонит на room1@host,
+	// media-worker подменит "room1" на UUID найдя его в Redis.
+	_ = r.aliases.Set(ctx, in.Name, row.ID)
 	_ = r.audit.Write(ctx, postgres.AuditWrite{ActorID: &actor, Action: "rooms.create", Target: row.ID.String()})
 	return &d, nil
 }
@@ -104,6 +108,13 @@ func (r *Rooms) Update(ctx context.Context, actor, id uuid.UUID, set map[string]
 		b, _ := json.Marshal(v)
 		set["default_layout"] = b
 	}
+	// При переименовании удаляем старый alias и заводим новый — SIP-резолв должен следовать за именем.
+	if newName, ok := set["name"].(string); ok && newName != "" {
+		if old, err := r.repo.Get(ctx, id); err == nil && old != nil && old.Name != newName {
+			_ = r.aliases.Delete(ctx, old.Name)
+		}
+		_ = r.aliases.Set(ctx, newName, id)
+	}
 	if err := r.repo.Update(ctx, id, set); err != nil {
 		return nil, apperr.Wrap(apperr.CodeInternal, "db", err)
 	}
@@ -112,9 +123,15 @@ func (r *Rooms) Update(ctx context.Context, actor, id uuid.UUID, set map[string]
 }
 
 func (r *Rooms) Delete(ctx context.Context, actor, id uuid.UUID) error {
+	// Получаем имя ДО удаления, чтобы знать какой alias подчистить.
+	var name string
+	if row, err := r.repo.Get(ctx, id); err == nil && row != nil {
+		name = row.Name
+	}
 	if err := r.repo.Delete(ctx, id); err != nil {
 		return apperr.Wrap(apperr.CodeInternal, "db", err)
 	}
+	_ = r.aliases.Delete(ctx, name)
 	_ = r.media.DestroyRoom(ctx, id)
 	_ = r.presence.Clear(ctx, id)
 	_ = r.audit.Write(ctx, postgres.AuditWrite{ActorID: &actor, Action: "rooms.delete", Target: id.String()})

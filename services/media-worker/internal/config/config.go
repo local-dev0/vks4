@@ -28,6 +28,7 @@ type Config struct {
 	PublicIP        string // публичный IP, подставляется как host-кандидат (1:1 NAT)
 	UDPPortMin      int
 	UDPPortMax      int
+	SignalingURL    string // http://signaling:8081 — для рассылки roster-обновлений после SIP join/leave
 }
 
 func FromEnv() *Config {
@@ -53,6 +54,7 @@ func FromEnv() *Config {
 		PublicIP:     env("MEDIA_WORKER_PUBLIC_IP", ""),
 		UDPPortMin:   intEnv("MEDIA_WORKER_UDP_MIN", 50000),
 		UDPPortMax:   intEnv("MEDIA_WORKER_UDP_MAX", 50050),
+		SignalingURL: env("SIGNALING_INTERNAL_URL", "http://signaling:8081"),
 	}
 }
 

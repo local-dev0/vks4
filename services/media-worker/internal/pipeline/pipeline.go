@@ -57,6 +57,11 @@ type Pipeline interface {
 	// SetPeerOverlay — markup + размер шрифта.
 	SetPeerOverlay(peerID, markup string, fontSize int) error
 
+	// SetPeerAudioMute мьютит вход peer'а в audiomixer (но decode/VAD продолжают работать).
+	// Используется для SIP-пиров: их audio должно учитываться в VAD/ASD, но не попадать
+	// в общий mix output (иначе self-echo).
+	SetPeerAudioMute(peerID string, muted bool) error
+
 	// Recording on/off; возвращает путь к файлу при остановке.
 	StartRecording(filename string) error
 	StopRecording() (path string, size int64, err error)

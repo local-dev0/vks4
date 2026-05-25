@@ -47,14 +47,21 @@ func main() {
 		cfg.VideoWidth, cfg.VideoHeight, cfg.VideoFPS, cfg.VideoBitrate, cfg.AudioBitrate, cfg.SFU,
 		cfg.PublicIP, uint16(cfg.UDPPortMin), uint16(cfg.UDPPortMax))
 
-	api := &httpapi.API{Rooms: rooms, RecordingDir: cfg.RecordingDir, Log: log}
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: api.Router()}
+	// Notifier: после AddSIPPeer / RemoveSIPPeer постит обновлённый roster в signaling,
+	// чтобы WebRTC-клиенты увидели/потеряли SIP-участника в своём UI.
+	if cfg.SignalingURL != "" {
+		rooms.SetNotifier(room.NewSignalingHTTPNotifier(cfg.SignalingURL, log))
+	}
 
-	// Heartbeat в Redis (для media-router)
+	// Redis: heartbeat + room-alias резолв (для SIP, см. httpapi.resolveRoomID).
+	var rdb *redis.Client
 	if rOpt, err := redis.ParseURL(cfg.RedisURL); err == nil {
-		rdb := redis.NewClient(rOpt)
+		rdb = redis.NewClient(rOpt)
 		go heartbeat(ctx, rdb, cfg.WorkerID, cfg.HTTPAddr, rooms, log)
 	}
+
+	api := &httpapi.API{Rooms: rooms, RecordingDir: cfg.RecordingDir, Log: log, Rdb: rdb}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: api.Router()}
 
 	// metrics
 	mm := http.NewServeMux()
