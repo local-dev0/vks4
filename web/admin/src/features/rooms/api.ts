@@ -32,7 +32,8 @@ export interface Participant {
   peerId: string;
   userId?: string;
   displayName: string;
-  role: "host" | "presenter" | "attendee";
+  role: "host" | "presenter" | "attendee" | "admin" | "guest";
+  transport?: string; // "webrtc" | "sip" — приходит из presence-хэша Redis
   muted: boolean;
   videoOff: boolean;
   joinedAt: string;

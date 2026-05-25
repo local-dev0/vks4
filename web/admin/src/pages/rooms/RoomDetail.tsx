@@ -57,7 +57,7 @@ export function RoomDetail() {
                 <td className="font-mono text-xs">{p.peerId.slice(0, 8)}</td>
                 <td>{p.displayName}</td>
                 <td>{p.role}</td>
-                <td>{p.connection?.transport ?? "webrtc"}</td>
+                <td>{p.transport ?? p.connection?.transport ?? "webrtc"}</td>
                 <td className="text-xs text-slate-500">
                   RTT {p.connection?.rtt ?? "—"}ms · loss {p.connection?.loss ?? 0}% · {p.connection?.bitrate ?? 0}bps
                 </td>
