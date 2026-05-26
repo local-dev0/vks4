@@ -62,10 +62,12 @@ type gstPipeline struct {
 	spec     Spec
 	pipeline *gst.Pipeline
 
-	vmix  *gst.Element
-	amix  *gst.Element
-	vsink *app.Sink
-	asink *app.Sink
+	vmix     *gst.Element
+	amix     *gst.Element
+	vsink    *app.Sink
+	asink    *app.Sink
+	vsinkSIP *app.Sink // appsink для SIP H.264 егресса
+	asinkSIP *app.Sink // appsink для SIP PCMU егресса
 
 	// placeholderPads[N] — compositor pad для placeholder-источника slot-N.
 	// Используется чтобы "No user" заглушка занимала свой фрейм даже если peer не подключён.
@@ -83,9 +85,11 @@ type gstPipeline struct {
 	peers  map[string]*peerBranch
 	closed bool
 
-	videoOut chan Sample
-	audioOut chan Sample
-	asdCh    chan ASDLevel
+	videoOut    chan Sample
+	audioOut    chan Sample
+	sipVideoOut chan Sample
+	sipAudioOut chan Sample
+	asdCh       chan ASDLevel
 
 	recRunning bool
 	recPath    string
@@ -135,12 +139,14 @@ func newGstPipeline(spec Spec) (*gstPipeline, error) {
 	}
 
 	g := &gstPipeline{
-		spec:     spec,
-		pipeline: pl,
-		peers:    map[string]*peerBranch{},
-		videoOut: make(chan Sample, 32),
-		audioOut: make(chan Sample, 64),
-		asdCh:    make(chan ASDLevel, 128),
+		spec:        spec,
+		pipeline:    pl,
+		peers:       map[string]*peerBranch{},
+		videoOut:    make(chan Sample, 32),
+		audioOut:    make(chan Sample, 64),
+		sipVideoOut: make(chan Sample, 32),
+		sipAudioOut: make(chan Sample, 64),
+		asdCh:       make(chan ASDLevel, 128),
 	}
 
 	if g.vmix, err = pl.GetElementByName("vmix"); err != nil || g.vmix == nil {
@@ -183,6 +189,17 @@ func newGstPipeline(spec Spec) (*gstPipeline, error) {
 
 	g.vsink.SetCallbacks(&app.SinkCallbacks{NewSampleFunc: g.onVideoSample})
 	g.asink.SetCallbacks(&app.SinkCallbacks{NewSampleFunc: g.onAudioSample})
+
+	// SIP video sink (H.264 для Polycom) — отдельная ветка vtee → x264enc → rtph264pay.
+	if sipVsinkEl, _ := pl.GetElementByName("sip-video-sink"); sipVsinkEl != nil {
+		g.vsinkSIP = app.SinkFromElement(sipVsinkEl)
+		g.vsinkSIP.SetCallbacks(&app.SinkCallbacks{NewSampleFunc: g.onSIPVideoSample})
+	}
+	// SIP audio sink (PCMU для Polycom) — отдельная ветка atee → mulawenc → rtppcmupay.
+	if sipAsinkEl, _ := pl.GetElementByName("sip-audio-sink"); sipAsinkEl != nil {
+		g.asinkSIP = app.SinkFromElement(sipAsinkEl)
+		g.asinkSIP.SetCallbacks(&app.SinkCallbacks{NewSampleFunc: g.onSIPAudioSample})
+	}
 
 	// SyncHandler перехватывает сообщения СИНХРОННО в момент post() до того как
 	// bus решает кому их отдать. Это надёжнее AddWatch для ELEMENT-сообщений от level,
@@ -685,9 +702,11 @@ func (p *gstPipeline) pumpAppsrc(src *app.Source, in chan []byte, done chan stru
 	}
 }
 
-func (p *gstPipeline) VideoOut() <-chan Sample   { return p.videoOut }
-func (p *gstPipeline) AudioOut() <-chan Sample   { return p.audioOut }
-func (p *gstPipeline) ASDLevel() <-chan ASDLevel { return p.asdCh }
+func (p *gstPipeline) VideoOut() <-chan Sample    { return p.videoOut }
+func (p *gstPipeline) AudioOut() <-chan Sample    { return p.audioOut }
+func (p *gstPipeline) SIPVideoOut() <-chan Sample { return p.sipVideoOut }
+func (p *gstPipeline) SIPAudioOut() <-chan Sample { return p.sipAudioOut }
+func (p *gstPipeline) ASDLevel() <-chan ASDLevel  { return p.asdCh }
 
 // handleLevelMessage парсит bus-сообщение от level элемента и отправляет уровень в asdCh.
 // level emit'ит structure "level" с массивами rms/peak/decay (dBFS, отрицательные значения).
@@ -739,6 +758,14 @@ func (p *gstPipeline) onVideoSample(sink *app.Sink) gst.FlowReturn {
 func (p *gstPipeline) onAudioSample(sink *app.Sink) gst.FlowReturn {
 	pulledA.Add(1)
 	return p.pullSample(sink, p.audioOut)
+}
+
+func (p *gstPipeline) onSIPVideoSample(sink *app.Sink) gst.FlowReturn {
+	return p.pullSample(sink, p.sipVideoOut)
+}
+
+func (p *gstPipeline) onSIPAudioSample(sink *app.Sink) gst.FlowReturn {
+	return p.pullSample(sink, p.sipAudioOut)
 }
 
 func (p *gstPipeline) pullSample(sink *app.Sink, out chan Sample) gst.FlowReturn {
@@ -943,6 +970,13 @@ func buildPipelineDesc(spec Spec) string {
 			"! tee name=vtee "+
 			placeholderTee+phBranches+
 			"vtee. ! queue max-size-buffers=4 leaky=downstream ! %[4]s ! appsink name=video-sink sync=false emit-signals=false max-buffers=4 drop=true "+
+			// Параллельная H.264 ветка для SIP-egress (Polycom не умеет VP8).
+			// PT=109 совпадает с тем что sip-gateway оффрит в SDP answer.
+			// profile=baseline — Polycom надёжно декодирует только baseline (не main/high).
+			// h264parse config-interval=1 + rtph264pay config-interval=1 — SPS/PPS в каждый
+			// keyframe (без них Polycom не может инициализировать декодер: в SDP fmtp нет
+			// sprop-parameter-sets, поэтому SPS/PPS должны приходить в RTP).
+			"vtee. ! queue max-size-buffers=4 leaky=downstream ! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=1500 key-int-max=60 ! video/x-h264,profile=baseline ! h264parse config-interval=1 ! rtph264pay pt=109 config-interval=1 ssrc=3 ! appsink name=sip-video-sink sync=false emit-signals=false max-buffers=4 drop=true "+
 			"vtee. ! queue ! valve name=recv drop=true ! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 ! mp4mux name=mp4 ! filesink name=fsink location=/dev/null async=false "+
 			"audiotestsrc volume=0.0 is-live=true do-timestamp=true wave=silence "+
 			"! audio/x-raw,format=S16LE,channels=2,rate=48000 "+
@@ -950,6 +984,9 @@ func buildPipelineDesc(spec Spec) string {
 			"! audio/x-raw,format=S16LE,channels=2,rate=48000 "+
 			"! tee name=atee "+
 			"atee. ! queue max-size-buffers=8 leaky=downstream ! %[5]s ! appsink name=audio-sink sync=false emit-signals=false max-buffers=8 drop=true "+
+			// Параллельная PCMU ветка для SIP-egress (Polycom не умеет Opus).
+			// 8 kHz mono — нативная частота PCMU/G.711. PT=0 совпадает с SDP answer.
+			"atee. ! queue max-size-buffers=8 leaky=downstream ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=1,rate=8000 ! mulawenc ! rtppcmupay pt=0 ssrc=4 ! appsink name=sip-audio-sink sync=false emit-signals=false max-buffers=8 drop=true "+
 			"atee. ! queue ! valve name=reca drop=true ! audioconvert ! voaacenc ! mp4.",
 		spec.Width, spec.Height, spec.FPS, videoEnc, audioEnc)
 }

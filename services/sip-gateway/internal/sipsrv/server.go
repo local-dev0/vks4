@@ -260,6 +260,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	go s.natBindLoop(call)
 	if fsVideoConn != nil {
 		go s.relayVideoFStoMW(call)
+		go s.relayVideoMWtoFS(call)
 		go s.natBindVideoLoop(call)
 	}
 
@@ -388,8 +389,39 @@ func (s *Server) relayMWtoFS(call *Call) {
 	}
 }
 
-// relayVideoFStoMW: Polycom видео (H.264) → media-worker через FS.
-// Egress (MCU → Polycom) пока не реализован — обратная ветка отсутствует.
+// relayVideoMWtoFS: media-worker H.264 mix output → sip-gateway → Polycom (egress).
+// Зеркало relayMWtoFS для audio. Без него Polycom видит чёрный экран — мы получаем
+// его видео, но не шлём своё (compositor mix всех остальных участников).
+func (s *Server) relayVideoMWtoFS(call *Call) {
+	buf := make([]byte, 1500)
+	var count uint64
+	for {
+		select {
+		case <-call.stop:
+			return
+		default:
+		}
+		n, _, err := call.MWVideoConn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		count++
+		if count == 1 || count%500 == 0 {
+			s.log.Info("MW→FS video relay",
+				zap.String("call-id", call.CallID),
+				zap.Uint64("pkts", count),
+			)
+		}
+		if call.FSVideoRemote == nil {
+			continue // ждём auto-learn по incoming
+		}
+		if _, err := call.FSVideoConn.WriteToUDP(buf[:n], call.FSVideoRemote); err != nil {
+			s.log.Debug("fs video write", zap.Error(err))
+		}
+	}
+}
+
+// relayVideoFStoMW: Polycom видео (H.264) → media-worker.
 func (s *Server) relayVideoFStoMW(call *Call) {
 	buf := make([]byte, 1500)
 	var count uint64
@@ -660,7 +692,7 @@ a=sendrecv
 	return base + fmt.Sprintf(`m=video %d RTP/AVP 109
 a=rtpmap:109 H264/90000
 a=fmtp:109 profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1
-a=recvonly
+a=sendrecv
 `, videoPort)
 }
 

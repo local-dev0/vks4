@@ -320,7 +320,11 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 				if !ok {
 					return
 				}
-				r.forwardAudio(peerID, pkt)
+				// SIP RTP теперь PCMU PT=0 (раньше Opus PT=111 через FreeSWITCH transcoding).
+				// SFU-форвардить PCMU в slot-track WebRTC-пиров нельзя — их codec=Opus,
+				// браузерный декодер услышит щелчки. WebRTC временно не слышит SIP,
+				// пока не добавим per-SIP Opus encoder (TODO).
+				// Pipeline всё ещё получает аудио (для VAD + mix → PCMU egress в SIPAudioOut).
 				select {
 				case audioIn <- pkt:
 				default:
@@ -682,11 +686,28 @@ func (r *Room) egressLoop() {
 			if !ok {
 				return
 			}
-			// SIP-peer'ы получают pipeline mix как input. Их собственное аудио НЕ пушится
-			// в pipeline (см. AddSIPPeer) — иначе на Polycom получался бы self-echo.
-			// SIP-аудио уходит к WebRTC-peer'ам через SFU forwardAudio.
-			// Известное ограничение: мульти-SIP сценарий — два SIP-пира не услышат друг друга
-			// через pipeline-mix. Лечится отдельным per-SIP mix branch (TODO).
+			// AudioOut (Opus) больше не идёт в SIP-пиров — для них есть SIPAudioOut (PCMU).
+			// Здесь Opus mix используется только для записи/Loki (если включено).
+			_ = s
+		case s, ok := <-r.pipeline.SIPVideoOut():
+			if !ok {
+				return
+			}
+			// H.264 egress для SIP-пиров (Polycom не умеет VP8 → pipeline отдаёт x264enc → rtph264pay).
+			r.mu.RLock()
+			sipPeers := make([]*sipbridge.Peer, 0, len(r.sipPeers))
+			for _, sp := range r.sipPeers {
+				sipPeers = append(sipPeers, sp)
+			}
+			r.mu.RUnlock()
+			for _, sp := range sipPeers {
+				_ = sp.SendVideo(s.Data)
+			}
+		case s, ok := <-r.pipeline.SIPAudioOut():
+			if !ok {
+				return
+			}
+			// PCMU egress для SIP-пиров (Polycom не умеет Opus → pipeline отдаёт mulawenc → rtppcmupay).
 			r.mu.RLock()
 			sipPeers := make([]*sipbridge.Peer, 0, len(r.sipPeers))
 			for _, sp := range r.sipPeers {

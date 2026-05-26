@@ -42,6 +42,12 @@ type Pipeline interface {
 	// VideoOut / AudioOut — каналы, откуда worker берёт закодированные миксованные сэмплы.
 	VideoOut() <-chan Sample
 	AudioOut() <-chan Sample
+	// SIPVideoOut — отдельный поток H.264 RTP для SIP-пиров (Polycom не умеет VP8).
+	// Это вторая ветка tee после compositor с x264enc → rtph264pay (PT=109).
+	SIPVideoOut() <-chan Sample
+	// SIPAudioOut — отдельный поток PCMU RTP для SIP-пиров (Polycom не умеет Opus).
+	// Вторая ветка atee после audiomixer с mulawenc → rtppcmupay (PT=0).
+	SIPAudioOut() <-chan Sample
 
 	// ASDLevel — поток (peerID, dBFS) для активного спикера.
 	ASDLevel() <-chan ASDLevel

@@ -21,6 +21,7 @@ type Peer struct {
 
 	mu              sync.RWMutex
 	audioRemoteAddr *net.UDPAddr // sip-gateway audio endpoint (auto-learned)
+	videoRemoteAddr *net.UDPAddr // sip-gateway video endpoint (auto-learned)
 
 	audioIn chan<- []byte
 	videoIn chan<- []byte
@@ -59,7 +60,7 @@ func NewPeer(peerID string, audioIn, videoIn chan<- []byte, log *zap.Logger) (*P
 	return p, nil
 }
 
-// Send отправляет RTP пакет (Opus) audio-remote endpoint. No-op если remote ещё не известен.
+// Send отправляет RTP пакет (audio) к audio-remote endpoint. No-op если remote ещё не известен.
 func (p *Peer) Send(pkt []byte) error {
 	p.mu.RLock()
 	addr := p.audioRemoteAddr
@@ -68,6 +69,21 @@ func (p *Peer) Send(pkt []byte) error {
 		return nil
 	}
 	_, err := p.AudioConn.WriteToUDP(pkt, addr)
+	return err
+}
+
+// SendVideo отправляет RTP пакет (H.264) к video-remote endpoint. No-op если video не открыт.
+func (p *Peer) SendVideo(pkt []byte) error {
+	if p.VideoConn == nil {
+		return nil
+	}
+	p.mu.RLock()
+	addr := p.videoRemoteAddr
+	p.mu.RUnlock()
+	if addr == nil {
+		return nil
+	}
+	_, err := p.VideoConn.WriteToUDP(pkt, addr)
 	return err
 }
 
@@ -117,11 +133,16 @@ func (p *Peer) recvVideoLoop() {
 			return
 		default:
 		}
-		n, _, err := p.VideoConn.ReadFromUDP(buf)
+		n, addr, err := p.VideoConn.ReadFromUDP(buf)
 		if err != nil {
 			p.log.Debug("sip video rtp recv error", zap.String("peer", p.ID), zap.Error(err))
 			return
 		}
+		p.mu.Lock()
+		if p.videoRemoteAddr == nil || !p.videoRemoteAddr.IP.Equal(addr.IP) || p.videoRemoteAddr.Port != addr.Port {
+			p.videoRemoteAddr = addr // auto-learn sip-gateway video source addr
+		}
+		p.mu.Unlock()
 		pkts++
 		if pkts == 1 || pkts%500 == 0 {
 			p.log.Info("sip video rtp recv", zap.String("peer", p.ID), zap.Uint64("pkts", pkts), zap.Int("size", n))
