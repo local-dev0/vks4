@@ -12,14 +12,17 @@
              ставится только на OUTBOUND leg через {var=value} prefix в bridge data — FS делает
              transcoding inbound→opus. -->
         <action application="set" data="bypass_media=false"/>
+        <action application="set" data="video_possible=true"/>
+        <!-- Раздельные prefs: audio_codec_prefs форсит Opus, video_codec_prefs форсит H264.
+             absolute_codec_string смешивает их и ломает negotiation (FS либо игнорит видео,
+             либо сваливается на inbound PCMU). -->
+        <action application="set" data="audio_codec_prefs=opus"/>
+        <action application="set" data="video_codec_prefs=H264"/>
         <action application="log" data="INFO Incoming SIP call: from=${caller_id_number} to=${destination_number}"/>
-        <!-- answer() устанавливает media на inbound leg (Polycom PCMU). bridge затем создаёт
-             leg B к sip-gateway (Opus). FS делает transcoding PCMU↔Opus между legs.
-             absolute_codec_string=opus только на leg B (через bridge prefix) — FS forces Opus
-             в outbound INVITE, не trying transcode гимны Polycom'а. -->
-        <action application="answer"/>
+        <!-- НЕТ ни answer, ни pre_answer — bridge сам ответит после установки outbound leg.
+             Это даёт FS свободу negotiate Opus на outbound и H264 на video одновременно. -->
         <action application="bridge"
-          data="{absolute_codec_string=opus,sip_h_X-VKS-Room=${destination_number},sip_h_X-VKS-Caller=${caller_id_number}}sofia/gateway/vks-sipgw/${destination_number}"/>
+          data="{originate_video=true,video_possible=true,audio_codec_prefs=opus,video_codec_prefs=H264,sip_h_X-VKS-Room=${destination_number},sip_h_X-VKS-Caller=${caller_id_number}}sofia/gateway/vks-sipgw/${destination_number}"/>
       </condition>
     </extension>
   </context>

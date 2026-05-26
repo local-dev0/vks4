@@ -31,7 +31,7 @@ func NewGstFactory() Factory {
 
 func (p *noopPipeline) Start(ctx context.Context) error { return nil }
 func (p *noopPipeline) Stop(ctx context.Context) error  { return nil }
-func (p *noopPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, error) {
+func (p *noopPipeline) AddPeer(peerID, videoCodec, audioCodec string) (chan<- []byte, chan<- []byte, error) {
 	v := make(chan []byte, 1)
 	a := make(chan []byte, 1)
 	return v, a, nil

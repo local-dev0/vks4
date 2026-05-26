@@ -87,22 +87,20 @@ services:
   freeswitch:
     # signalwire/freeswitch требует регистрации SignalWire с 2021.
     # safarov/freeswitch — community image на основе официальных source, без auth.
+    # Профиль "sip-fs" (а не "sip") — FS теперь опциональный, sip-gateway работает direct
+    # (Polycom звонит напрямую на :5060 sip-gateway). FS оставлен для будущих SIP-trunk сценариев.
     image: safarov/freeswitch:latest
     restart: unless-stopped
-    profiles: ["sip"]
-    # Отключаем healthcheck из image (он использует fs_cli с другим паролем).
+    profiles: ["sip-fs"]
     healthcheck:
       disable: true
     volumes:
       - ./deploy/freeswitch/conf:/etc/freeswitch:ro
     ports:
-      - "5060:5060/udp"
       - "5060:5060/tcp"
       - "5061:5061/tcp"
       - "16384-16484:16384-16484/udp"
     environment:
-      # external_sip_ip/external_rtp_ip = публичный IP сервера, на котором живёт FS
-      # для корректного NAT-handling SIP/SDP. Прокидывается через .env как FS_PUBLIC_IP.
       SOFIA_EXTERNAL_IP: ${FS_PUBLIC_IP:-127.0.0.1}
     networks: [media, app]
 
@@ -185,23 +183,20 @@ services:
     profiles: ["sip"]
     env_file: .env
     environment:
-      FS_ESL_HOST: freeswitch
-      FS_ESL_PORT: "8021"
-      FS_ESL_PASSWORD: ${FS_ESL_PASSWORD:-ClueCon}
-      SIP_GATEWAY_BIND: ":5070"
-      # Пустой PUBLIC_IP → sip-gateway auto-detect свой docker-internal IP при старте
-      # (FS bridge'ит к нам внутри docker network, host IP не подходит для RTP).
-      SIP_GATEWAY_PUBLIC_IP: ""
+      # Direct-SIP режим (без FreeSWITCH): Polycom звонит на 5060 sip-gateway напрямую.
+      # FS_ESL_HOST явно сбрасываем — в .env он остался от legacy FS-режима, в direct
+      # его нужно подавить чтобы sip-gateway не пытался коннектиться к несуществующему FS.
+      FS_ESL_HOST: ""
+      SIP_GATEWAY_BIND: ":5060"
+      # Публичный IP хоста — Polycom получит его в SDP c-line и пошлёт RTP сюда.
+      SIP_GATEWAY_PUBLIC_IP: ${FS_PUBLIC_IP:-127.0.0.1}
       SIP_GATEWAY_RTP_MIN: "17000"
       SIP_GATEWAY_RTP_MAX: "17200"
       MEDIA_WORKER_HTTP_URL: "http://media-worker:9091"
       MEDIA_WORKER_HOST: "media-worker"
     ports:
-      # SIP-сервер слушает только во внутренней docker-сети (FS B2BUA bridge'ит сюда),
-      # но RTP пакеты идут на host IP из SDP — поэтому RTP-диапазон должен быть exposed.
+      - "5060:5060/udp"
       - "17000-17200:17000-17200/udp"
-    depends_on:
-      - freeswitch
     networks: [app, media]
 
   admin-web:

@@ -34,7 +34,9 @@ type Pipeline interface {
 
 	// AddPeer создаёт appsrc-видео и appsrc-аудио для нового peer.
 	// Возвращает каналы, в которые надо писать RTP пакеты (depayload делает pipeline).
-	AddPeer(peerID string) (videoIn chan<- []byte, audioIn chan<- []byte, err error)
+	// videoCodec: "" → VP8 (PT 96, default для WebRTC), "h264" → H.264 (PT 109, для SIP).
+	// audioCodec: "" → Opus (PT 111, default для WebRTC), "pcmu" → G.711 μ-law (PT 0, для Polycom).
+	AddPeer(peerID, videoCodec, audioCodec string) (videoIn chan<- []byte, audioIn chan<- []byte, err error)
 	RemovePeer(peerID string) error
 
 	// VideoOut / AudioOut — каналы, откуда worker берёт закодированные миксованные сэмплы.

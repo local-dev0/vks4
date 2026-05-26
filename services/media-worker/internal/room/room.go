@@ -171,7 +171,7 @@ func (r *Room) AddPeer(ctx context.Context, peerID, displayName, sdpOffer string
 	// Пропускаем создание bin'ов чтобы не тратить CPU на encoder/decoder впустую.
 	var videoIn, audioIn chan<- []byte
 	if !r.sfu {
-		videoIn, audioIn, err = r.pipeline.AddPeer(peerID)
+		videoIn, audioIn, err = r.pipeline.AddPeer(peerID, r.videoCodec, "")
 		if err != nil {
 			_ = p.Close()
 			return "", err
@@ -294,7 +294,8 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 	// Но в общий audiomixer SIP-аудио вносить нельзя — иначе оно вернётся к нам через
 	// pipeline.AudioOut и Polycom услышит self-echo. Решение: пушим в pipeline (VAD работает),
 	// но мьютим SIP peer'а на amix-pad'е (вклад в mix output обнуляется).
-	_, audioIn, err := r.pipeline.AddPeer(peerID)
+	// SIP-пир от Polycom: PCMU audio + H264 video (нативные кодеки Polycom).
+	videoIn, audioIn, err := r.pipeline.AddPeer(peerID, "h264", "pcmu")
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +305,8 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 	// Свой mux-канал: SIP RTP → (a) pipeline.audioIn для VAD, (b) forwardAudio SFU
 	// к WebRTC-пирам (они получают аудио SIP-пира в свой slot-track).
 	sipAudioCh := make(chan []byte, 256)
-	sp, err := sipbridge.NewPeer(peerID, sipAudioCh, r.log)
+	// Видео идёт напрямую в pipeline (compositor микширует H.264 от Polycom со всеми остальными).
+	sp, err := sipbridge.NewPeer(peerID, sipAudioCh, videoIn, r.log)
 	if err != nil {
 		_ = r.pipeline.RemovePeer(peerID)
 		return nil, err

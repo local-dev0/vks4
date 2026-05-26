@@ -14,6 +14,10 @@
     <load module="mod_opus"/>
     <load module="mod_g711"/>
     <load module="mod_g722"/>
+    <!-- mod_av даёт реальный libav-based H.264 encoder/decoder для bypass_media=false режима.
+         mod_h26x загружать НЕ нужно (он регистрирует H.264 как passthru, что используется только
+         в proxy_media режиме; рядом с mod_av он перекрывает кодек выбор и ломает negotiation). -->
+    <load module="mod_av"/>
     <load module="mod_sndfile"/>
     <load module="mod_native_file"/>
     <load module="mod_tone_stream"/>

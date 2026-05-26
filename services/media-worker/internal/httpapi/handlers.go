@@ -147,6 +147,7 @@ type addSIPPeerReq struct {
 
 type addSIPPeerResp struct {
 	AudioPort int `json:"audioPort"`
+	VideoPort int `json:"videoPort"`
 }
 
 // addSIPPeer создаёт SIP-peer (plain-RTP) в комнате — для интеграции FreeSWITCH B2BUA.
@@ -177,7 +178,7 @@ func (a *API) addSIPPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	// Запись в presence: admin UI читает Redis hash room:{id}:participants через control-plane.
 	a.presenceAddSIP(r.Context(), roomID, in.PeerID, in.DisplayName)
-	writeJSON(w, http.StatusOK, addSIPPeerResp{AudioPort: sp.AudioPort})
+	writeJSON(w, http.StatusOK, addSIPPeerResp{AudioPort: sp.AudioPort, VideoPort: sp.VideoPort})
 }
 
 func (a *API) removeSIPPeer(w http.ResponseWriter, r *http.Request) {

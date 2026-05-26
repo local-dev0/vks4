@@ -58,15 +58,24 @@ type Server struct {
 }
 
 type Call struct {
-	CallID      string
-	Room        string
-	Caller      string
-	PeerID      string       // peerID в media-worker
-	FSConn      *net.UDPConn // ← / → FreeSWITCH (sip-gateway's local RTP, в SDP answer)
-	FSRemote    *net.UDPAddr // FS RTP endpoint (auto-learn)
-	MWConn      *net.UDPConn // ← / → media-worker (отдельный UDP socket)
-	MWRemote    *net.UDPAddr // media-worker RTP endpoint
-	stop        chan struct{}
+	CallID string
+	Room   string
+	Caller string
+	PeerID string // peerID в media-worker
+
+	// audio
+	FSConn   *net.UDPConn // ← / → FreeSWITCH audio
+	FSRemote *net.UDPAddr // FS audio RTP endpoint (auto-learn)
+	MWConn   *net.UDPConn // ← / → media-worker audio
+	MWRemote *net.UDPAddr // media-worker audio RTP endpoint
+
+	// video (ingress-only в текущей итерации: Polycom → MCU; MCU → Polycom не реализован)
+	FSVideoConn   *net.UDPConn
+	FSVideoRemote *net.UDPAddr
+	MWVideoConn   *net.UDPConn
+	MWVideoRemote *net.UDPAddr
+
+	stop chan struct{}
 }
 
 func New(cfg Config, log *zap.Logger, br *bridge.Bridge) (*Server, error) {
@@ -141,53 +150,94 @@ func splitHostPort(addr string) (string, string, error) {
 // Media-bridge в media-worker — следующая итерация. Сейчас просто принимаем RTP и log'аем счётчик.
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	callID := req.CallID().Value()
+	// X-VKS-Room / X-VKS-Caller — кастомные заголовки от FS dialplan (legacy путь через B2BUA).
+	// В direct-SIP режиме (Polycom звонит напрямую) их нет — берём room из To-URI user part
+	// (Polycom набирает room1@host → room = "room1"), caller из From-URI user part.
 	room := getHeaderValue(req, "X-VKS-Room")
 	caller := getHeaderValue(req, "X-VKS-Caller")
+	if room == "" {
+		if t := req.To(); t != nil {
+			room = t.Address.User
+		}
+	}
 	if caller == "" {
 		if f := req.From(); f != nil {
 			caller = f.Address.User
 		}
 	}
 
-	remoteIP, remotePort, ok := parseSDPRTP(string(req.Body()))
-	if !ok {
-		s.log.Warn("invite: cannot parse SDP", zap.String("call-id", callID))
+	audio, video := parseSDP(string(req.Body()))
+	if audio.Port == 0 || audio.IP == "" {
+		s.log.Warn("invite: cannot parse audio SDP", zap.String("call-id", callID))
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 488, "Not Acceptable Here", nil))
 		return
 	}
 
-	// FSConn: UDP listener для приёма RTP от FS (используется в SDP answer как local port).
-	fsConn, localPort, err := openRTPListener(s.cfg.RTPMinPort, s.cfg.RTPMaxPort)
+	// FSConn: UDP listener для приёма audio RTP от FS.
+	fsAudioConn, audioLocal, err := openRTPListener(s.cfg.RTPMinPort, s.cfg.RTPMaxPort)
 	if err != nil {
-		s.log.Error("rtp listener", zap.Error(err))
+		s.log.Error("rtp listener audio", zap.Error(err))
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 500, "Internal Error", nil))
 		return
 	}
-	fsRemote := &net.UDPAddr{IP: net.ParseIP(remoteIP), Port: remotePort}
+	fsAudioRemote := &net.UDPAddr{IP: net.ParseIP(audio.IP), Port: audio.Port}
 
-	// Создаём peer в media-worker. Возвращает UDP port куда мы будем форвардить RTP.
+	// Video listener — открываем только если SDP клиента содержит активный m=video.
+	var fsVideoConn *net.UDPConn
+	var fsVideoRemote *net.UDPAddr
+	var videoLocal uint16
+	if video.Port > 0 && video.IP != "" {
+		fsVideoConn, videoLocal, err = openRTPListener(s.cfg.RTPMinPort, s.cfg.RTPMaxPort)
+		if err != nil {
+			s.log.Warn("rtp listener video (отключаем видео)", zap.Error(err))
+		} else {
+			fsVideoRemote = &net.UDPAddr{IP: net.ParseIP(video.IP), Port: video.Port}
+		}
+	}
+
 	peerID := callID // одна-к-одной mapping
-	mwPort, err := s.createMWPeer(peerID, caller, room)
+	mwAudioPort, mwVideoPort, err := s.createMWPeer(peerID, caller, room)
 	if err != nil {
 		s.log.Error("create mw peer", zap.Error(err))
-		_ = fsConn.Close()
+		_ = fsAudioConn.Close()
+		if fsVideoConn != nil {
+			_ = fsVideoConn.Close()
+		}
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 503, "Service Unavailable", nil))
 		return
 	}
-	mwAddr := &net.UDPAddr{IP: net.ParseIP(resolveOnce(s.cfg.MediaWorkerHost)), Port: mwPort}
-	// MWConn: отдельный UDP socket для общения с media-worker.
-	mwConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	mwIP := net.ParseIP(resolveOnce(s.cfg.MediaWorkerHost))
+	mwAudioAddr := &net.UDPAddr{IP: mwIP, Port: mwAudioPort}
+	mwAudioConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		s.log.Error("mw udp dial", zap.Error(err))
-		_ = fsConn.Close()
+		s.log.Error("mw audio udp", zap.Error(err))
+		_ = fsAudioConn.Close()
+		if fsVideoConn != nil {
+			_ = fsVideoConn.Close()
+		}
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 500, "Internal Error", nil))
 		return
+	}
+	var mwVideoConn *net.UDPConn
+	var mwVideoAddr *net.UDPAddr
+	if fsVideoConn != nil && mwVideoPort > 0 {
+		mwVideoConn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			s.log.Warn("mw video udp (отключаем видео)", zap.Error(err))
+			_ = fsVideoConn.Close()
+			fsVideoConn = nil
+			fsVideoRemote = nil
+		} else {
+			mwVideoAddr = &net.UDPAddr{IP: mwIP, Port: mwVideoPort}
+		}
 	}
 
 	call := &Call{
 		CallID: callID, Room: room, Caller: caller, PeerID: peerID,
-		FSConn: fsConn, FSRemote: fsRemote,
-		MWConn: mwConn, MWRemote: mwAddr,
+		FSConn: fsAudioConn, FSRemote: fsAudioRemote,
+		MWConn: mwAudioConn, MWRemote: mwAudioAddr,
+		FSVideoConn: fsVideoConn, FSVideoRemote: fsVideoRemote,
+		MWVideoConn: mwVideoConn, MWVideoRemote: mwVideoAddr,
 		stop: make(chan struct{}),
 	}
 	s.mu.Lock()
@@ -197,22 +247,24 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		zap.String("call-id", callID),
 		zap.String("caller", caller),
 		zap.String("room", room),
-		zap.String("fs-remote", fmt.Sprintf("%s:%d", remoteIP, remotePort)),
-		zap.Uint16("local-rtp", localPort),
-		zap.String("mw-remote", mwAddr.String()),
+		zap.String("fs-audio", fmt.Sprintf("%s:%d", audio.IP, audio.Port)),
+		zap.Uint16("local-audio", audioLocal),
+		zap.String("mw-audio", mwAudioAddr.String()),
+		zap.Bool("video", fsVideoConn != nil),
+		zap.Uint16("local-video", videoLocal),
 	)
 	s.br.Accept(callID, room, caller)
 
 	go s.relayFStoMW(call)
 	go s.relayMWtoFS(call)
-	// Проактивный NAT-binding: сразу шлём пустые RTP-пакеты в обе стороны.
-	// FS с rtp-auto-adjust=true (default) тогда зафиксирует наш фактический source IP
-	// и будет слать обратные RTP туда — независимо от того что мы указали в SDP.
-	// Media-worker через auto-learn получит наш MWConn source — он начнёт слать MCU output.
 	go s.natBindLoop(call)
+	if fsVideoConn != nil {
+		go s.relayVideoFStoMW(call)
+		go s.natBindVideoLoop(call)
+	}
 
-	// Формируем SDP answer. Поддерживаем только Opus (FS делает transcoding из любых кодеков).
-	answer := buildSDPAnswer(s.cfg.PublicIP, localPort)
+	// SDP answer: всегда audio. Video — только если клиент его предложил И мы открыли listener.
+	answer := buildSDPAnswer(s.cfg.PublicIP, audioLocal, videoLocal, fsVideoConn != nil)
 
 	res := sip.NewResponseFromRequest(req, 200, "OK", []byte(answer))
 	ct := sip.NewHeader("Content-Type", "application/sdp")
@@ -257,6 +309,12 @@ func (s *Server) cleanup(callID string) {
 	}
 	if call.MWConn != nil {
 		_ = call.MWConn.Close()
+	}
+	if call.FSVideoConn != nil {
+		_ = call.FSVideoConn.Close()
+	}
+	if call.MWVideoConn != nil {
+		_ = call.MWVideoConn.Close()
 	}
 	// Уведомляем media-worker о завершении peer'а.
 	if call.PeerID != "" && call.Room != "" {
@@ -330,6 +388,72 @@ func (s *Server) relayMWtoFS(call *Call) {
 	}
 }
 
+// relayVideoFStoMW: Polycom видео (H.264) → media-worker через FS.
+// Egress (MCU → Polycom) пока не реализован — обратная ветка отсутствует.
+func (s *Server) relayVideoFStoMW(call *Call) {
+	buf := make([]byte, 1500)
+	var count uint64
+	for {
+		select {
+		case <-call.stop:
+			return
+		default:
+		}
+		n, addr, err := call.FSVideoConn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		if call.FSVideoRemote == nil || !call.FSVideoRemote.IP.Equal(addr.IP) || call.FSVideoRemote.Port != addr.Port {
+			call.FSVideoRemote = addr
+		}
+		count++
+		if count == 1 || count%500 == 0 {
+			s.log.Info("FS→MW video relay",
+				zap.String("call-id", call.CallID),
+				zap.Uint64("pkts", count),
+				zap.String("mw", call.MWVideoRemote.String()),
+			)
+		}
+		if _, err := call.MWVideoConn.WriteToUDP(buf[:n], call.MWVideoRemote); err != nil {
+			s.log.Debug("mw video write", zap.Error(err))
+		}
+	}
+}
+
+// natBindVideoLoop — аналогично natBindLoop, но для видео-сокетов.
+// PT=109 (H.264) чтобы FS не отбрасывал как unknown payload type.
+func (s *Server) natBindVideoLoop(call *Call) {
+	hdr := []byte{
+		0x80, 109, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	ssrc := rand.Uint32()
+	hdr[8] = byte(ssrc >> 24)
+	hdr[9] = byte(ssrc >> 16)
+	hdr[10] = byte(ssrc >> 8)
+	hdr[11] = byte(ssrc)
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	var seq uint16
+	for {
+		select {
+		case <-call.stop:
+			return
+		case <-tick.C:
+		}
+		seq++
+		hdr[2] = byte(seq >> 8)
+		hdr[3] = byte(seq)
+		if call.FSVideoRemote != nil {
+			_, _ = call.FSVideoConn.WriteToUDP(hdr, call.FSVideoRemote)
+		}
+		if call.MWVideoRemote != nil {
+			_, _ = call.MWVideoConn.WriteToUDP(hdr, call.MWVideoRemote)
+		}
+	}
+}
+
 // natBindLoop посылает минимальный RTP-пакет (12-байтовый header, PT=96, без payload)
 // в FS и в media-worker каждые 200 мс пока не пошёл реальный media-стрим. Это нужно для:
 //   - FS rtp-auto-adjust: FS перепривяжет remote RTP к нашему фактическому source addr,
@@ -338,9 +462,9 @@ func (s *Server) relayMWtoFS(call *Call) {
 //     MCU output обратно.
 // Цикл сам останавливается по call.stop (закрывается при BYE/CANCEL).
 func (s *Server) natBindLoop(call *Call) {
-	// Минимальный RTP header: V=2, P=0, X=0, CC=0, M=0, PT=111 (Opus), seq=0, ts=0, ssrc=random.
+	// Минимальный RTP header: V=2, P=0, X=0, CC=0, M=0, PT=0 (PCMU), seq=0, ts=0, ssrc=random.
 	hdr := []byte{
-		0x80, 111, 0x00, 0x00,
+		0x80, 0, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00,
 	}
@@ -373,28 +497,29 @@ func (s *Server) natBindLoop(call *Call) {
 }
 
 // createMWPeer вызывает POST /rooms/{room}/sip-peers в media-worker.
-// Возвращает audioPort на стороне media-worker (куда нам форвардить RTP).
-func (s *Server) createMWPeer(peerID, displayName, room string) (int, error) {
+// Возвращает (audioPort, videoPort). videoPort=0 если media-worker не открыл video listener.
+func (s *Server) createMWPeer(peerID, displayName, room string) (int, int, error) {
 	url := fmt.Sprintf("%s/rooms/%s/sip-peers", s.cfg.MediaWorkerURL, room)
 	body, _ := jsonMarshal(map[string]string{"peerId": peerID, "displayName": displayName})
 	resp, err := httpClient.Post(url, "application/json", body)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("mw status %d", resp.StatusCode)
+		return 0, 0, fmt.Errorf("mw status %d", resp.StatusCode)
 	}
 	var out struct {
 		AudioPort int `json:"audioPort"`
+		VideoPort int `json:"videoPort"`
 	}
 	if err := jsonDecode(resp.Body, &out); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if out.AudioPort == 0 {
-		return 0, fmt.Errorf("mw returned audioPort=0")
+		return 0, 0, fmt.Errorf("mw returned audioPort=0")
 	}
-	return out.AudioPort, nil
+	return out.AudioPort, out.VideoPort, nil
 }
 
 func resolveOnce(host string) string {
@@ -474,8 +599,17 @@ func openRTPListener(minP, maxP uint16) (*net.UDPConn, uint16, error) {
 	return nil, 0, errors.New("no free RTP port")
 }
 
-// parseSDPRTP вытаскивает IP и port для audio RTP из SDP. Минимальный парсер для INVITE.
-func parseSDPRTP(sdp string) (string, int, bool) {
+// sdpEndpoint описывает один m-line (kind: audio|video) с его IP/портом.
+// Если port=0, медиа отключено в SDP — мы не отвечаем по этому m-line.
+type sdpEndpoint struct {
+	IP   string
+	Port int
+}
+
+// parseSDP вытаскивает endpoint'ы для audio и video. session-level c= применяется
+// ко всем m= по умолчанию; media-level c= в текущем парсере не поддерживается
+// (FreeSWITCH обычно даёт session-level).
+func parseSDP(sdp string) (audio, video sdpEndpoint) {
 	var globalIP string
 	for _, line := range strings.Split(sdp, "\n") {
 		line = strings.TrimSpace(line)
@@ -483,35 +617,51 @@ func parseSDPRTP(sdp string) (string, int, bool) {
 		case strings.HasPrefix(line, "c=IN IP4 "):
 			globalIP = strings.TrimPrefix(line, "c=IN IP4 ")
 		case strings.HasPrefix(line, "m=audio "):
-			parts := strings.Fields(strings.TrimPrefix(line, "m=audio "))
-			if len(parts) >= 1 {
-				var port int
-				fmt.Sscanf(parts[0], "%d", &port)
-				if port > 0 && globalIP != "" {
-					return globalIP, port, true
-				}
-			}
+			audio.Port = parseMPort(line, "m=audio ")
+			audio.IP = globalIP
+		case strings.HasPrefix(line, "m=video "):
+			video.Port = parseMPort(line, "m=video ")
+			video.IP = globalIP
 		}
 	}
-	return "", 0, false
+	return
 }
 
-// buildSDPAnswer формирует минимальный SDP с Opus аудио на нашей стороне.
-// PT=111 — Pion/media-worker convention для Opus (pipeline depayloader caps payload=111,
-// outbound rtpopuspay pt=111). Если использовать 96, FS будет слать PT=96, и rtpopusdepay
-// в media-worker pipeline отбросит пакеты — depayloader жёстко фильтрует по PT в caps.
-func buildSDPAnswer(publicIP string, rtpPort uint16) string {
-	return fmt.Sprintf(`v=0
+func parseMPort(line, prefix string) int {
+	parts := strings.Fields(strings.TrimPrefix(line, prefix))
+	if len(parts) < 1 {
+		return 0
+	}
+	var port int
+	fmt.Sscanf(parts[0], "%d", &port)
+	return port
+}
+
+// buildSDPAnswer формирует SDP с PCMU аудио и (опционально) H.264 видео.
+// PT=0 для PCMU (G.711 μ-law, 8 kHz mono) — это primary audio codec Polycom'а.
+// PT=109 для H.264 — Polycom предлагает 109/110/111 (все H.264 разных профилей).
+// Direct-SIP режим (без FreeSWITCH): Polycom звонит на нас → мы принимаем INVITE,
+// отвечаем 200 OK с поддерживаемыми кодеками, дальше RTP идёт напрямую между Polycom
+// и sip-gateway. Транскодинг PCMU↔Opus делает media-worker pipeline (mulawdec).
+func buildSDPAnswer(publicIP string, audioPort, videoPort uint16, withVideo bool) string {
+	base := fmt.Sprintf(`v=0
 o=vks4 %d %d IN IP4 %s
 s=vks4-sipgw
 c=IN IP4 %s
 t=0 0
-m=audio %d RTP/AVP 111
-a=rtpmap:111 opus/48000/2
-a=fmtp:111 useinbandfec=1
+m=audio %d RTP/AVP 0
+a=rtpmap:0 PCMU/8000
 a=ptime:20
 a=sendrecv
-`, rand.Int31(), rand.Int31(), publicIP, publicIP, rtpPort)
+`, rand.Int31(), rand.Int31(), publicIP, publicIP, audioPort)
+	if !withVideo {
+		return base
+	}
+	return base + fmt.Sprintf(`m=video %d RTP/AVP 109
+a=rtpmap:109 H264/90000
+a=fmtp:109 profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1
+a=recvonly
+`, videoPort)
 }
 
 func getHeaderValue(req *sip.Request, name string) string {

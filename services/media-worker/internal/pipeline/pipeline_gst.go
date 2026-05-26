@@ -254,7 +254,7 @@ func (p *gstPipeline) Stop(ctx context.Context) error {
 	return p.pipeline.SetState(gst.StateNull)
 }
 
-func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, error) {
+func (p *gstPipeline) AddPeer(peerID, videoCodec, audioCodec string) (chan<- []byte, chan<- []byte, error) {
 	p.mu.Lock()
 	if _, ok := p.peers[peerID]; ok {
 		p.mu.Unlock()
@@ -262,27 +262,41 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	}
 	p.mu.Unlock()
 
+	// GStreamer parse-launch использует "." как разделитель element.pad, "-" парсится как
+	// арифметика в pad-reference. Polycom call-id может содержать "@host.ip" — все спецсимволы
+	// заменяем на "_", оставляем только [a-zA-Z0-9_].
+	gstName := sanitizeName(peerID)
+
 	// --- video branch ---
-	// avdec_vp8 (libav) терпимее к damaged VP8 чем vp8dec (libvpx) при потерях.
-	// Большой jitterbuffer latency + queue после depay снижают error rate.
+	// avdec_vp8/avdec_h264 (libav) терпимее к damaged input чем нативные libvpx/libx264 при потерях.
 	scaledW, scaledH := p.spec.Width/2, p.spec.Height/2
+	// rtp caps: encoding-name + payload должны соответствовать SDP'у источника:
+	//   VP8 — WebRTC (Pion negotiates PT=96)
+	//   H264 — SIP (sip-gateway отвечает PT=109 в SDP к FreeSWITCH)
+	var rtpCaps, depay, dec string
+	switch videoCodec {
+	case "h264":
+		rtpCaps = `caps="application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,payload=109"`
+		depay = "rtph264depay"
+		dec = "avdec_h264"
+	default: // vp8
+		rtpCaps = `caps="application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96"`
+		depay = "rtpvp8depay"
+		dec = "avdec_vp8"
+	}
 	// КЛЮЧЕВОЕ: явно фиксируем format=I420 — иначе compositor.sink_%u не negotiate
 	// и весь bin падает в streaming stopped, reason not-negotiated (-4).
 	vDesc := fmt.Sprintf(
-		// videorate перед compositor — стабильный 30fps на peer-pad (compositor force-live
-		// aggregation требует regular cadence).
-		// Прим.: textoverlay внутри bin'а ломал caps negotiation (peer-pad переставал отдавать
-		// фреймы в compositor) — перенесём подписи на client-side overlay позже.
-		`appsrc name=vsrc-%[1]s is-live=true format=time do-timestamp=true caps="application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000,payload=96" `+
-			`! rtpvp8depay `+
+		`appsrc name=vsrc_%[1]s is-live=true format=time do-timestamp=true %[4]s `+
+			`! %[5]s `+
 			`! queue max-size-buffers=32 leaky=downstream `+
-			`! avdec_vp8 `+
+			`! %[6]s `+
 			`! videoconvert `+
 			`! videoscale add-borders=true `+
 			`! videorate `+
 			`! video/x-raw,format=I420,width=%[2]d,height=%[3]d,framerate=30/1,pixel-aspect-ratio=1/1 `+
 			`! queue max-size-buffers=4 leaky=downstream`,
-		peerID, scaledW, scaledH)
+		gstName, scaledW, scaledH, rtpCaps, depay, dec)
 
 	vbin, err := gst.NewBinFromString(vDesc, true)
 	if err != nil {
@@ -305,7 +319,7 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	// Вставляем textoverlay между peer's video bin и compositor (вне bin'а, в pipeline root).
 	// Текст задаётся позже через SetPeerName. Внутри bin textoverlay ломал caps negotiation,
 	// здесь он работает как обычный element pipeline.
-	nameTov, err := gst.NewElementWithName("textoverlay", "tov-"+peerID)
+	nameTov, err := gst.NewElementWithName("textoverlay", "tov_"+gstName)
 	if err != nil || nameTov == nil {
 		p.vmix.ReleaseRequestPad(vmixSink)
 		_ = p.pipeline.Remove(vbin.Element)
@@ -359,16 +373,28 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	// --- audio branch ---
 	// Явный format=S16LE на выходе — нужен чтобы VAD-appsink ниже декодировал samples
 	// корректно (мы парсим как int16).
+	// audioCodec: "opus" (default, WebRTC) или "pcmu" (Polycom/legacy SIP).
+	var aRtpCaps, aDepay, aDec string
+	switch audioCodec {
+	case "pcmu":
+		aRtpCaps = `caps="application/x-rtp,media=audio,encoding-name=PCMU,clock-rate=8000,payload=0"`
+		aDepay = "rtppcmudepay"
+		aDec = "mulawdec"
+	default: // opus
+		aRtpCaps = `caps="application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111"`
+		aDepay = "rtpopusdepay"
+		aDec = "opusdec"
+	}
 	aDesc := fmt.Sprintf(
-		`appsrc name=asrc-%[1]s is-live=true format=time do-timestamp=true caps="application/x-rtp,media=audio,encoding-name=OPUS,clock-rate=48000,payload=111" `+
-			`! rtpopusdepay `+
+		`appsrc name=asrc_%[1]s is-live=true format=time do-timestamp=true %[2]s `+
+			`! %[3]s `+
 			`! queue max-size-buffers=32 leaky=downstream `+
-			`! opusdec `+
+			`! %[4]s `+
 			`! audioconvert `+
 			`! audioresample `+
 			`! audio/x-raw,format=S16LE,channels=2,rate=48000 `+
 			`! queue max-size-buffers=8 leaky=downstream`,
-		peerID)
+		gstName, aRtpCaps, aDepay, aDec)
 	abin, err := gst.NewBinFromString(aDesc, true)
 	if err != nil {
 		p.vmix.ReleaseRequestPad(vmixSink)
@@ -400,11 +426,11 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	// вторая → appsink (для расчёта RMS в Go = VAD/ASD). GStreamer level элемент не работает
 	// надёжно с go-gst bus reader'ом, поэтому считаем уровень сами по raw S16LE samples.
 	teeStr := fmt.Sprintf(
-		"tee name=vadtee-%s allow-not-linked=true "+
-			"vadtee-%[1]s. ! queue max-size-buffers=4 leaky=downstream ! "+
-			"appsink name=vadsink-%[1]s emit-signals=true sync=false max-buffers=4 drop=true "+
-			"vadtee-%[1]s. ! queue max-size-buffers=4 leaky=downstream",
-		peerID)
+		"tee name=vadtee_%s allow-not-linked=true "+
+			"vadtee_%[1]s. ! queue max-size-buffers=4 leaky=downstream ! "+
+			"appsink name=vadsink_%[1]s emit-signals=true sync=false max-buffers=4 drop=true "+
+			"vadtee_%[1]s. ! queue max-size-buffers=4 leaky=downstream",
+		gstName)
 	teeBin, err := gst.NewBinFromString(teeStr, true)
 	if err != nil {
 		p.amix.ReleaseRequestPad(amixSink)
@@ -447,7 +473,7 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 		return nil, nil, fmt.Errorf("link vad-tee → amix: %v", ret)
 	}
 	// Получаем VAD appsink и подключаем callback для расчёта RMS.
-	vadSinkEl, err := teeBin.GetElementByName("vadsink-" + peerID)
+	vadSinkEl, err := teeBin.GetElementByName("vadsink_" + gstName)
 	if err != nil || vadSinkEl == nil {
 		return nil, nil, fmt.Errorf("vadsink not found")
 	}
@@ -459,11 +485,11 @@ func (p *gstPipeline) AddPeer(peerID string) (chan<- []byte, chan<- []byte, erro
 	})
 
 	// appsrc-ы внутри bin'ов
-	vsrcEl, err := vbin.GetElementByName("vsrc-" + peerID)
+	vsrcEl, err := vbin.GetElementByName("vsrc_" + gstName)
 	if err != nil || vsrcEl == nil {
 		return nil, nil, fmt.Errorf("vsrc not found in bin: %v", err)
 	}
-	asrcEl, err := abin.GetElementByName("asrc-" + peerID)
+	asrcEl, err := abin.GetElementByName("asrc_" + gstName)
 	if err != nil || asrcEl == nil {
 		return nil, nil, fmt.Errorf("asrc not found in bin: %v", err)
 	}
@@ -947,3 +973,19 @@ func buildAudioEnc(spec Spec) string {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// sanitizeName заменяет всё кроме [a-zA-Z0-9_] на "_" — чтобы передавать peerID
+// безопасно в gst-parse-launch строки (имена элементов и pad-references).
+func sanitizeName(s string) string {
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+			b[i] = c
+		default:
+			b[i] = '_'
+		}
+	}
+	return string(b)
+}

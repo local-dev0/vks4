@@ -1,7 +1,7 @@
 // Пакет sipbridge — SIP peer transport для media-worker.
 // SIP-клиенты (через FreeSWITCH B2BUA) не используют WebRTC/DTLS — только plain RTP.
-// Этот модуль открывает UDP listener, форвардит входящие пакеты в pipeline.AddPeer audio
-// channel, и шлёт исходящие пакеты (MCU output) обратно к sip-gateway.
+// Открывает UDP listener'ы (audio + video), форвардит входящие RTP в pipeline-каналы,
+// и шлёт audio обратно к sip-gateway (egress video в эту итерацию не входит).
 package sipbridge
 
 import (
@@ -12,48 +12,57 @@ import (
 )
 
 type Peer struct {
-	ID        string
-	AudioConn *net.UDPConn // listens RTP from sip-gateway; same socket used to send back
-	AudioPort int
+	ID string
 
-	mu         sync.RWMutex
-	remoteAddr *net.UDPAddr // sip-gateway endpoint (auto-learned по first inbound packet)
+	AudioConn *net.UDPConn // listens audio RTP from sip-gateway; same socket used to send back
+	AudioPort int
+	VideoConn *net.UDPConn // listens video RTP from sip-gateway (одностороннее: ingress)
+	VideoPort int
+
+	mu              sync.RWMutex
+	audioRemoteAddr *net.UDPAddr // sip-gateway audio endpoint (auto-learned)
 
 	audioIn chan<- []byte
+	videoIn chan<- []byte
 	stop    chan struct{}
 	log     *zap.Logger
 }
 
-// NewPeer открывает UDP listener на любом свободном порту. audioIn — pipeline audio channel.
-func NewPeer(peerID string, audioIn chan<- []byte, log *zap.Logger) (*Peer, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+// NewPeer открывает два UDP listener'а: один для audio, второй для video.
+// audioIn / videoIn — каналы pipeline (depay+decode там).
+// videoIn может быть nil (тогда video listener не запускается).
+func NewPeer(peerID string, audioIn, videoIn chan<- []byte, log *zap.Logger) (*Peer, error) {
+	aconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		return nil, err
 	}
 	p := &Peer{
 		ID:        peerID,
-		AudioConn: conn,
-		AudioPort: conn.LocalAddr().(*net.UDPAddr).Port,
+		AudioConn: aconn,
+		AudioPort: aconn.LocalAddr().(*net.UDPAddr).Port,
 		audioIn:   audioIn,
+		videoIn:   videoIn,
 		stop:      make(chan struct{}),
 		log:       log,
 	}
-	go p.recvLoop()
+	if videoIn != nil {
+		vconn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			_ = aconn.Close()
+			return nil, err
+		}
+		p.VideoConn = vconn
+		p.VideoPort = vconn.LocalAddr().(*net.UDPAddr).Port
+		go p.recvVideoLoop()
+	}
+	go p.recvAudioLoop()
 	return p, nil
 }
 
-// SetRemote явно указывает endpoint sip-gateway. Если не вызвать, peer learn'ит по первому
-// принятому пакету. Полезно если нужно начать слать audio к peer'у до того как он что-то прислал.
-func (p *Peer) SetRemote(addr *net.UDPAddr) {
-	p.mu.Lock()
-	p.remoteAddr = addr
-	p.mu.Unlock()
-}
-
-// Send отправляет RTP пакет (Opus) к remote endpoint. No-op если remote ещё не известен.
+// Send отправляет RTP пакет (Opus) audio-remote endpoint. No-op если remote ещё не известен.
 func (p *Peer) Send(pkt []byte) error {
 	p.mu.RLock()
-	addr := p.remoteAddr
+	addr := p.audioRemoteAddr
 	p.mu.RUnlock()
 	if addr == nil {
 		return nil
@@ -62,7 +71,7 @@ func (p *Peer) Send(pkt []byte) error {
 	return err
 }
 
-func (p *Peer) recvLoop() {
+func (p *Peer) recvAudioLoop() {
 	buf := make([]byte, 1500)
 	var pkts uint64
 	for {
@@ -73,22 +82,20 @@ func (p *Peer) recvLoop() {
 		}
 		n, addr, err := p.AudioConn.ReadFromUDP(buf)
 		if err != nil {
-			p.log.Debug("sip rtp recv error", zap.String("peer", p.ID), zap.Error(err))
+			p.log.Debug("sip audio rtp recv error", zap.String("peer", p.ID), zap.Error(err))
 			return
 		}
 		p.mu.Lock()
-		if p.remoteAddr == nil || !p.remoteAddr.IP.Equal(addr.IP) || p.remoteAddr.Port != addr.Port {
-			p.remoteAddr = addr // auto-learn
+		if p.audioRemoteAddr == nil || !p.audioRemoteAddr.IP.Equal(addr.IP) || p.audioRemoteAddr.Port != addr.Port {
+			p.audioRemoteAddr = addr // auto-learn
 		}
 		p.mu.Unlock()
 		pkts++
 		if pkts == 1 || pkts%500 == 0 {
 			p.log.Info("sip rtp recv", zap.String("peer", p.ID), zap.Uint64("pkts", pkts), zap.Int("size", n))
 		}
-		// Фильтр NAT-binding пакетов от sip-gateway (RTP-header без payload, 12 байт).
-		// Они нужны только чтобы научить наш auto-learn адресу отправителя — auto-learn выше
-		// уже отработал. Дальше эти пакеты ломают WebRTC-пир'ов: ssrc у них рандомный,
-		// если форварднуть в slot-track, jitter buffer и Opus decoder получают мусор.
+		// NAT-binding фильтр: 12-байтный RTP header без payload — нужен только для auto-learn,
+		// в pipeline/SFU не нужен (ломает jitter buffer из-за рандомного SSRC).
 		if n <= 12 {
 			continue
 		}
@@ -101,6 +108,36 @@ func (p *Peer) recvLoop() {
 	}
 }
 
+func (p *Peer) recvVideoLoop() {
+	buf := make([]byte, 1500)
+	var pkts uint64
+	for {
+		select {
+		case <-p.stop:
+			return
+		default:
+		}
+		n, _, err := p.VideoConn.ReadFromUDP(buf)
+		if err != nil {
+			p.log.Debug("sip video rtp recv error", zap.String("peer", p.ID), zap.Error(err))
+			return
+		}
+		pkts++
+		if pkts == 1 || pkts%500 == 0 {
+			p.log.Info("sip video rtp recv", zap.String("peer", p.ID), zap.Uint64("pkts", pkts), zap.Int("size", n))
+		}
+		if n <= 12 {
+			continue
+		}
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		select {
+		case p.videoIn <- pkt:
+		default:
+		}
+	}
+}
+
 func (p *Peer) Close() {
 	select {
 	case <-p.stop:
@@ -108,4 +145,7 @@ func (p *Peer) Close() {
 		close(p.stop)
 	}
 	_ = p.AudioConn.Close()
+	if p.VideoConn != nil {
+		_ = p.VideoConn.Close()
+	}
 }

@@ -20,10 +20,15 @@
     <param name="accept-blind-auth" value="true"/>
     <param name="accept-blind-reg" value="false"/>
 
-    <param name="inbound-codec-prefs" value="OPUS,PCMA,PCMU"/>
-    <param name="outbound-codec-prefs" value="OPUS,PCMA,PCMU"/>
+    <!-- Все кодеки в одном списке. FS строит channel->codecs из этого списка
+         (audio + video в одну mparams->codecs[]), и без видео-кодека здесь не выставляется
+         CF_VIDEO_POSSIBLE → outbound INVITE не получает m=video. -->
+    <param name="inbound-codec-prefs" value="OPUS,PCMA,PCMU,H264"/>
+    <param name="outbound-codec-prefs" value="OPUS,PCMA,PCMU,H264"/>
+    <param name="inbound-video-codec-prefs" value="H264"/>
+    <param name="outbound-video-codec-prefs" value="H264"/>
     <param name="inbound-codec-negotiation" value="generous"/>
-    <param name="inbound-late-negotiation" value="true"/>
+    <param name="inbound-late-negotiation" value="false"/>
 
     <param name="rtp-timeout-sec" value="300"/>
     <param name="rtp-hold-timeout-sec" value="1800"/>
