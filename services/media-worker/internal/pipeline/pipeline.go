@@ -48,6 +48,9 @@ type Pipeline interface {
 	// SIPAudioOut — отдельный поток PCMU RTP для SIP-пиров (Polycom не умеет Opus).
 	// Вторая ветка atee после audiomixer с mulawenc → rtppcmupay (PT=0).
 	SIPAudioOut() <-chan Sample
+	// PeerOpusOut — per-SIP-peer Opus RTP output для SFU-форварда в WebRTC slot-track'и.
+	// Доступен только для пиров, добавленных с audioCodec="pcmu". nil если нет.
+	PeerOpusOut(peerID string) <-chan []byte
 
 	// ASDLevel — поток (peerID, dBFS) для активного спикера.
 	ASDLevel() <-chan ASDLevel

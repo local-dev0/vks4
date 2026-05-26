@@ -41,6 +41,7 @@ func (p *noopPipeline) VideoOut() <-chan Sample                  { return p.vide
 func (p *noopPipeline) AudioOut() <-chan Sample                  { return p.audio }
 func (p *noopPipeline) SIPVideoOut() <-chan Sample               { return p.video }
 func (p *noopPipeline) SIPAudioOut() <-chan Sample               { return p.audio }
+func (p *noopPipeline) PeerOpusOut(peerID string) <-chan []byte  { return nil }
 func (p *noopPipeline) ASDLevel() <-chan ASDLevel                { return p.asd }
 func (p *noopPipeline) UpdateLayout(cells []layout.Cell) error   { return nil }
 func (p *noopPipeline) SetPeerName(peerID, name string) error    { return nil }

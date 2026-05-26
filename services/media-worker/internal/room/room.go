@@ -320,11 +320,9 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 				if !ok {
 					return
 				}
-				// SIP RTP теперь PCMU PT=0 (раньше Opus PT=111 через FreeSWITCH transcoding).
-				// SFU-форвардить PCMU в slot-track WebRTC-пиров нельзя — их codec=Opus,
-				// браузерный декодер услышит щелчки. WebRTC временно не слышит SIP,
-				// пока не добавим per-SIP Opus encoder (TODO).
-				// Pipeline всё ещё получает аудио (для VAD + mix → PCMU egress в SIPAudioOut).
+				// PCMU RTP от sip-gateway → pipeline для декода/mix/VAD.
+				// SFU-форвард в WebRTC slot'ы делается ОТДЕЛЬНО — из PeerOpusOut канала
+				// (per-peer Opus encoder в pipeline транскодит PCMU→Opus).
 				select {
 				case audioIn <- pkt:
 				default:
@@ -332,6 +330,23 @@ func (r *Room) AddSIPPeer(peerID, displayName string) (*sipbridge.Peer, error) {
 			}
 		}
 	}()
+	// Per-SIP-peer Opus output → SFU forward к WebRTC-пирам (raw PCMU их Opus-декодер
+	// не понимает, поэтому транскод через GStreamer opusenc).
+	if opusOut := r.pipeline.PeerOpusOut(peerID); opusOut != nil {
+		go func() {
+			for {
+				select {
+				case <-r.stopEgress:
+					return
+				case pkt, ok := <-opusOut:
+					if !ok {
+						return
+					}
+					r.forwardAudio(peerID, pkt)
+				}
+			}
+		}()
+	}
 	r.mu.Lock()
 	if r.sipPeers == nil {
 		r.sipPeers = map[string]*sipbridge.Peer{}

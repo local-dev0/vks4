@@ -96,18 +96,20 @@ type gstPipeline struct {
 }
 
 type peerBranch struct {
-	id       string
-	videoBin *gst.Bin
-	audioBin *gst.Bin
-	videoSrc *app.Source
-	audioSrc *app.Source
-	vMixPad  *gst.Pad // compositor.sink_N
-	aMixPad  *gst.Pad // audiomixer.sink_N
-	teeBin   *gst.Bin    // vad tee + appsink
-	nameTov  *gst.Element // textoverlay для подписи peer'а (в pipeline root, не в bin)
-	videoCh  chan []byte
-	audioCh  chan []byte
-	closeCh  chan struct{}
+	id        string
+	videoBin  *gst.Bin
+	audioBin  *gst.Bin
+	videoSrc  *app.Source
+	audioSrc  *app.Source
+	vMixPad   *gst.Pad // compositor.sink_N
+	aMixPad   *gst.Pad // audiomixer.sink_N
+	teeBin    *gst.Bin // vad tee + appsink (+ opus encoder для SIP)
+	nameTov   *gst.Element // textoverlay для подписи peer'а
+	opusSink  *app.Sink // только для SIP-пиров: per-peer Opus RTP output
+	opusOutCh chan []byte
+	videoCh   chan []byte
+	audioCh   chan []byte
+	closeCh   chan struct{}
 }
 
 // ----- factory ------------------------------------------------------------
@@ -442,12 +444,24 @@ func (p *gstPipeline) AddPeer(peerID, videoCodec, audioCodec string) (chan<- []b
 	// Вставляем tee между abin's src и amix.sink_%u: одна ветка → amix (для микширования),
 	// вторая → appsink (для расчёта RMS в Go = VAD/ASD). GStreamer level элемент не работает
 	// надёжно с go-gst bus reader'ом, поэтому считаем уровень сами по raw S16LE samples.
+	// Для SIP-пиров (PCMU) добавляем третью ветку tee: opusenc → rtpopuspay → appsink.
+	// Это даёт нам per-peer Opus RTP для SFU-форварда в WebRTC slot-track'и
+	// (которые ждут Opus, а raw PCMU они декодировать не умеют).
+	sipOpusBranch := ""
+	if audioCodec == "pcmu" {
+		sipOpusBranch = fmt.Sprintf(
+			" vadtee_%[1]s. ! queue max-size-buffers=8 leaky=downstream ! "+
+				"audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! "+
+				"opusenc bitrate=48000 frame-size=20 ! rtpopuspay pt=111 ssrc=5 ! "+
+				"appsink name=opusout_%[1]s emit-signals=true sync=false max-buffers=8 drop=true",
+			gstName)
+	}
 	teeStr := fmt.Sprintf(
 		"tee name=vadtee_%s allow-not-linked=true "+
 			"vadtee_%[1]s. ! queue max-size-buffers=4 leaky=downstream ! "+
 			"appsink name=vadsink_%[1]s emit-signals=true sync=false max-buffers=4 drop=true "+
 			"vadtee_%[1]s. ! queue max-size-buffers=4 leaky=downstream",
-		gstName)
+		gstName) + sipOpusBranch
 	teeBin, err := gst.NewBinFromString(teeStr, true)
 	if err != nil {
 		p.amix.ReleaseRequestPad(amixSink)
@@ -501,6 +515,42 @@ func (p *gstPipeline) AddPeer(peerID, videoCodec, audioCodec string) (chan<- []b
 		},
 	})
 
+	// Per-SIP-peer Opus encoder appsink — для SFU-форварда в WebRTC slot-track'и.
+	var opusSink *app.Sink
+	var opusOutCh chan []byte
+	if audioCodec == "pcmu" {
+		if el, _ := teeBin.GetElementByName("opusout_" + gstName); el != nil {
+			opusSink = app.SinkFromElement(el)
+			opusOutCh = make(chan []byte, 256)
+			ch := opusOutCh
+			opusSink.SetCallbacks(&app.SinkCallbacks{
+				NewSampleFunc: func(sink *app.Sink) gst.FlowReturn {
+					sample := sink.PullSample()
+					if sample == nil {
+						return gst.FlowOK
+					}
+					buf := sample.GetBuffer()
+					if buf == nil {
+						return gst.FlowOK
+					}
+					mi := buf.Map(gst.MapRead)
+					if mi == nil {
+						return gst.FlowOK
+					}
+					src := mi.Bytes()
+					data := make([]byte, len(src))
+					copy(data, src)
+					buf.Unmap()
+					select {
+					case ch <- data:
+					default:
+					}
+					return gst.FlowOK
+				},
+			})
+		}
+	}
+
 	// appsrc-ы внутри bin'ов
 	vsrcEl, err := vbin.GetElementByName("vsrc_" + gstName)
 	if err != nil || vsrcEl == nil {
@@ -518,14 +568,16 @@ func (p *gstPipeline) AddPeer(peerID, videoCodec, audioCodec string) (chan<- []b
 		videoBin: vbin,
 		audioBin: abin,
 		videoSrc: vsrc,
-		audioSrc: asrc,
-		vMixPad:  vmixSink,
-		aMixPad:  amixSink,
-		teeBin:   teeBin,
-		nameTov:  nameTov,
-		videoCh:  make(chan []byte, 256),
-		audioCh:  make(chan []byte, 256),
-		closeCh:  make(chan struct{}),
+		audioSrc:  asrc,
+		vMixPad:   vmixSink,
+		aMixPad:   amixSink,
+		teeBin:    teeBin,
+		nameTov:   nameTov,
+		opusSink:  opusSink,
+		opusOutCh: opusOutCh,
+		videoCh:   make(chan []byte, 256),
+		audioCh:   make(chan []byte, 256),
+		closeCh:   make(chan struct{}),
 	}
 
 	if ok := vbin.SyncStateWithParent(); !ok {
@@ -706,7 +758,16 @@ func (p *gstPipeline) VideoOut() <-chan Sample    { return p.videoOut }
 func (p *gstPipeline) AudioOut() <-chan Sample    { return p.audioOut }
 func (p *gstPipeline) SIPVideoOut() <-chan Sample { return p.sipVideoOut }
 func (p *gstPipeline) SIPAudioOut() <-chan Sample { return p.sipAudioOut }
-func (p *gstPipeline) ASDLevel() <-chan ASDLevel  { return p.asdCh }
+func (p *gstPipeline) PeerOpusOut(peerID string) <-chan []byte {
+	p.mu.Lock()
+	b := p.peers[peerID]
+	p.mu.Unlock()
+	if b == nil {
+		return nil
+	}
+	return b.opusOutCh
+}
+func (p *gstPipeline) ASDLevel() <-chan ASDLevel { return p.asdCh }
 
 // handleLevelMessage парсит bus-сообщение от level элемента и отправляет уровень в asdCh.
 // level emit'ит structure "level" с массивами rms/peak/decay (dBFS, отрицательные значения).
